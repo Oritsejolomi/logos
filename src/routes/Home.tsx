@@ -48,10 +48,10 @@ export function Home() {
         </h1>
         <div className="max-w-2xl space-y-3 text-ink-500 text-base sm:text-lg leading-relaxed">
           <p>
-            A Bible trivia game whose questions are written by AI — which
-            should worry you, and worried us enough to wrap every question in
-            four fact-checks, one of which reads the actual verse from a real,
-            public-domain Bible.
+            A Bible trivia game where every answer teaches you something,
+            right or wrong. Every question is fact-checked four ways against
+            real Scripture before you see it, because a trivia game that
+            teaches wrong things is worse than no trivia game.
           </p>
           <p className="text-ink-400 italic">
             Worth understanding before you play.{' '}
