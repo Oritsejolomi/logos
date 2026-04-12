@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// Loads the World English Bible (public domain) into the bible_verses table.
-// Run once after the 20260412144942_bible_verses migration has been applied.
+// Loads a public-domain Bible translation into the bible_verses table.
+// Supports: WEB (default), KJV, ASV. Source: getbible.net v2 API.
 //
 // Usage:
 //   SUPABASE_URL=https://xxx.supabase.co \
 //   SUPABASE_SERVICE_ROLE_KEY=... \
-//   node scripts/load-bible.mjs
+//   node scripts/load-bible.mjs [--translation web|kjv|asv]
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -13,6 +13,17 @@ if (!SUPABASE_URL || !SERVICE_KEY) {
   console.error('Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY');
   process.exit(1);
 }
+
+// Parse --translation flag. Default to WEB.
+const args = process.argv.slice(2);
+const translationArgIdx = args.indexOf('--translation');
+const translationSlug = (translationArgIdx >= 0 ? args[translationArgIdx + 1] : 'web').toLowerCase();
+const ALLOWED = new Set(['web', 'kjv', 'asv']);
+if (!ALLOWED.has(translationSlug)) {
+  console.error(`Unknown translation: ${translationSlug}. Allowed: ${[...ALLOWED].join(', ')}`);
+  process.exit(1);
+}
+const TRANSLATION_LABEL = translationSlug.toUpperCase();
 
 // getbible.net → canonical book name used throughout the app.
 const BOOK_NAME_MAP = {
@@ -50,30 +61,40 @@ function stripFootnotes(text) {
 }
 
 async function fetchBook(n) {
-  const res = await fetch(`https://api.getbible.net/v2/web/${n}.json`);
+  const res = await fetch(`https://api.getbible.net/v2/${translationSlug}/${n}.json`);
   if (!res.ok) throw new Error(`book ${n}: HTTP ${res.status}`);
   return res.json();
 }
 
-async function insertBatch(rows) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/bible_verses`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'apikey': SERVICE_KEY,
-      'Authorization': `Bearer ${SERVICE_KEY}`,
-      'Prefer': 'resolution=ignore-duplicates',
-    },
-    body: JSON.stringify(rows),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`insert batch HTTP ${res.status}: ${text.slice(0, 500)}`);
+async function insertBatch(rows, attempt = 0) {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/bible_verses`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SERVICE_KEY,
+        'Authorization': `Bearer ${SERVICE_KEY}`,
+        'Prefer': 'resolution=ignore-duplicates',
+      },
+      body: JSON.stringify(rows),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`insert batch HTTP ${res.status}: ${text.slice(0, 500)}`);
+    }
+  } catch (err) {
+    if (attempt < 4) {
+      const backoff = 500 * Math.pow(2, attempt);
+      console.error(`\n  insert failed (attempt ${attempt + 1}): ${err.message} — retrying in ${backoff}ms`);
+      await new Promise((res) => setTimeout(res, backoff));
+      return insertBatch(rows, attempt + 1);
+    }
+    throw err;
   }
 }
 
 async function main() {
-  console.log('Fetching all 66 books from getbible.net (WEB)...');
+  console.log(`Fetching all 66 books from getbible.net (${TRANSLATION_LABEL})...`);
   const allRows = [];
   const unmapped = new Set();
 
@@ -88,6 +109,7 @@ async function main() {
     for (const chapter of data.chapters ?? []) {
       for (const v of chapter.verses ?? []) {
         allRows.push({
+          translation: TRANSLATION_LABEL,
           book: bookName,
           chapter: v.chapter,
           verse: v.verse,
@@ -96,7 +118,7 @@ async function main() {
       }
     }
   }
-  console.log(`\nFetched ${allRows.length} verses.`);
+  console.log(`\nFetched ${allRows.length} verses for ${TRANSLATION_LABEL}.`);
   if (unmapped.size > 0) {
     console.error('UNMAPPED book names from getbible:', [...unmapped]);
     process.exit(1);
@@ -109,7 +131,7 @@ async function main() {
     await insertBatch(batch);
     process.stdout.write(`  ${Math.min(i + BATCH, allRows.length)}/${allRows.length}\r`);
   }
-  console.log(`\nDone. Inserted ${allRows.length} verses.`);
+  console.log(`\nDone. Inserted ${allRows.length} ${TRANSLATION_LABEL} verses.`);
 }
 
 main().catch((err) => {

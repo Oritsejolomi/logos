@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   flagQuestion,
   getSoloQuestion,
+  getSoloState,
   postScore,
   queueSoloQuestions,
   submitSoloAnswer,
@@ -65,11 +66,31 @@ export function SoloPlay() {
 
   useEffect(() => {
     if (!sessionId) { setErr('No session id in URL'); return; }
-    void loadQuestion();
-    // Fire the queue-filler in the background. Idempotent on the server, so
-    // calling it immediately is safe even if create-solo-session already
-    // filled every slot from the bank.
-    void queueSoloQuestions({ session_id: sessionId, player_uuid: playerUuid }).catch(() => undefined);
+
+    // Check session status first. If the session is already finished (e.g.
+    // the user navigated here via a direct URL after posting their score),
+    // jump straight to the finished phase instead of trying to load Q1 —
+    // which would hit a 409 from get-question and render a raw error page.
+    (async () => {
+      try {
+        const state = await getSoloState({ session_id: sessionId, player_uuid: playerUuid });
+        if (state.status === 'finished') {
+          setScore(state.score);
+          setStreak(state.streak);
+          setPhase('finished');
+          return;
+        }
+        if (state.status === 'abandoned') {
+          setErr('This session was abandoned. Start a new one from the home screen.');
+          return;
+        }
+        // Active session — load Q1 and kick off the queue filler.
+        void loadQuestion();
+        void queueSoloQuestions({ session_id: sessionId, player_uuid: playerUuid }).catch(() => undefined);
+      } catch (e) {
+        setErr((e as Error).message);
+      }
+    })();
 
   }, [sessionId]);
 

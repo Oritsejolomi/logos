@@ -206,7 +206,7 @@ export function RoomLobby() {
           disabled={starting || players.length < 1}
           className="w-full rounded-md bg-accent px-4 py-3 text-card font-semibold hover:bg-accent-soft disabled:opacity-50 transition"
         >
-          {starting ? 'Starting…' : players.length < 2 ? 'Start anyway (solo in room)' : 'Start game'}
+          {starting ? 'Starting…' : 'Start game'}
         </button>
       ) : (
         <div className="rounded-md border border-rule bg-card p-4 text-center text-sm text-ink-500 italic">

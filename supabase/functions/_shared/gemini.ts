@@ -191,7 +191,9 @@ export interface JudgeVerdict {
   reason: string;
 }
 
-const JUDGE_SYSTEM = `You are a Bible fact-checker. You review Bible trivia questions proposed by another AI and verify whether the marked-correct answer is actually supported by the cited scripture in the 66-book Protestant canon. You do not rely on tradition, denomination, or extra-biblical sources. You are strict: if you are not certain the marked answer is correct per the cited verse, you say so.`;
+const JUDGE_SYSTEM = `You are a Bible fact-checker. You review Bible trivia questions proposed by another AI and verify whether the marked-correct answer is actually supported by the cited scripture in the 66-book Protestant canon. You do not rely on tradition, denomination, or extra-biblical sources. You are strict: if you are not certain the marked answer is correct per the cited verse, you say so.
+
+When the question includes verse text from multiple public-domain translations (WEB, KJV, ASV), read ALL of them before deciding. If the translations agree on a reading, treat that as strong evidence. If they disagree in a way that affects the answer (a translation-sensitive question about a specific word choice, for example), prefer the interpretation supported by the majority reading, and flag ambiguous cases rather than forcing a verdict.`;
 
 const JUDGE_RESPONSE_SCHEMA = {
   type: 'object',
@@ -215,8 +217,8 @@ function buildJudgePrompt(q: GeneratedQuestion, verseText?: string): string {
   ];
 
   if (verseText) {
-    parts.push(``, `ACTUAL VERSE TEXT (World English Bible, public domain):`, verseText);
-    parts.push(``, `Use the verse text above as the authoritative source. Do not rely on your memory.`);
+    parts.push(``, `ACTUAL VERSE TEXT (public-domain translations: WEB, KJV, ASV):`, verseText);
+    parts.push(``, `Use the verse text above as the authoritative source. Cross-check the claim against all translations shown. Do not rely on your memory — only trust what these translations actually say.`);
   }
 
   parts.push(
