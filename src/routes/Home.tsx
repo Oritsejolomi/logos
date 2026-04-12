@@ -48,22 +48,20 @@ export function Home() {
         </h1>
         <div className="max-w-2xl space-y-3 text-ink-500 text-base sm:text-lg leading-relaxed">
           <p>
-            The uncomfortable truth: <span className="text-ink-800 font-semibold">AI gets Bible
-            trivia wrong all the time</span>. We assumed ours would too, and
-            built Logos around that assumption. Every question runs a gauntlet of
-            four accuracy gates — including one that pulls the actual verse from
-            a real public-domain Bible and cross-checks the answer against three
-            translations (WEB, KJV, ASV).
+            A Bible trivia game whose questions are written by AI — which
+            should worry you, and worried us enough to wrap every question in
+            four fact-checks, one of which reads the actual verse from a real,
+            public-domain Bible.
           </p>
           <p className="text-ink-400 italic">
-            Before you play, please read{' '}
+            Worth understanding before you play.{' '}
             <Link
               to="/about"
               className="text-accent font-medium not-italic underline underline-offset-4 decoration-accent/60 hover:decoration-accent"
             >
-              how it works and what we base doctrine on
+              Read how it works
             </Link>
-            . You should trust this more once you see what we do, and less until you do.
+            .
           </p>
         </div>
       </section>
