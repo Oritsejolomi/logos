@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body,
+#root {
+  min-height: 100dvh;
+  background-color: #f5efde;
+  color: #1c1610;
+}
+
+body {
+  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* Inter stylistic sets — only apply to non-mono text so the JetBrains Mono
+   numerals used for scores aren't affected. ss01 single-story a, cv11 single-
+   story g. */
+body :not(.font-mono) {
+  font-feature-settings: 'ss01', 'cv11';
+}
+
+.font-mono, .tabular-nums {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+/* Subtle paper-grain background texture via layered radial gradients. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(circle at 15% 20%, rgba(124, 45, 18, 0.03) 0px, transparent 40%),
+    radial-gradient(circle at 85% 70%, rgba(46, 94, 62, 0.025) 0px, transparent 50%);
+  z-index: -1;
+}
+
+h1, h2, h3, h4 {
+  font-family: 'Fraunces', ui-serif, Georgia, serif;
+  font-variation-settings: 'opsz' 48;
+  letter-spacing: -0.01em;
+}
