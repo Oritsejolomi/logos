@@ -24,9 +24,11 @@ const PACES: Pace[] = ['speedy', 'arcade', 'meditative'];
 const MODES = ['solo', 'multiplayer'] as const;
 type Mode = (typeof MODES)[number];
 
+// Endless is shown first because that's the only mode solo can run going
+// forward. Fixed kept as a tab so legacy scores still have a home.
 const BOARDS: Array<{ id: SessionMode; label: string }> = [
-  { id: 'fixed', label: 'Fixed' },
   { id: 'endless', label: 'Endless' },
+  { id: 'fixed', label: 'Fixed' },
 ];
 
 type CategoryFilter = Category | 'all';
@@ -43,7 +45,7 @@ export function HallOfFame() {
   const difficulty = (params.get('difficulty') ?? 'all') as DifficultyFilter;
   const pace = (params.get('pace') ?? 'all') as PaceFilter;
   const mode = (params.get('mode') ?? 'all') as ModeFilter;
-  const board = (params.get('board') ?? 'fixed') as SessionMode;
+  const board = (params.get('board') ?? 'endless') as SessionMode;
 
   useEffect(() => {
     getLeaderboard(100)
