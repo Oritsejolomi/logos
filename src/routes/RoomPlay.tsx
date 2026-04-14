@@ -4,12 +4,15 @@ import {
   CATEGORIES,
   getMpQuestion,
   postScore,
+  queueRoomQuestions,
   startRoomQuestions,
   submitCategoryPick,
   submitMpAnswer,
   tickRoom,
   type Category,
+  type MpVariant,
   type MultiplayerQuestion,
+  type SessionMode,
 } from '../lib/api';
 import { getPlayerUuid, getUsername } from '../lib/identity';
 import { subscribeToRoom, type RoundClosedPayload } from '../lib/realtime';
@@ -22,13 +25,16 @@ interface RoomRow {
   category: Category | null;
   difficulty: string;
   pace: string;
-  question_count: number;
+  question_count: number | null;
   max_players: number;
   host_player_uuid: string;
   current_q_index: number;
   current_q_opened_at: string | null;
   current_q_ends_at: string | null;
   category_select_ends_at: string | null;
+  session_mode: SessionMode;
+  mp_variant: MpVariant | null;
+  shared_lives: number | null;
 }
 
 interface PlayerRow {
@@ -40,6 +46,9 @@ interface PlayerRow {
   multiplier: number;
   has_picked: boolean;
   category_pick: string | null;
+  lives_remaining: number | null;
+  correct_count: number;
+  eliminated_at: string | null;
 }
 
 export function RoomPlay() {
@@ -63,6 +72,7 @@ export function RoomPlay() {
   const playerUuid = getPlayerUuid();
   const lastFetchedIndex = useRef<number | null>(null);
   const generationTriggered = useRef(false);
+  const sessionModeRef = useRef<SessionMode>('fixed');
 
   // ---- Data loading helpers ----
 
@@ -80,7 +90,7 @@ export function RoomPlay() {
     if (!roomId) return;
     const { data } = await supabase
       .from('room_players')
-      .select('player_uuid, display_username, is_host, score, streak, multiplier, has_picked, category_pick')
+      .select('player_uuid, display_username, is_host, score, streak, multiplier, has_picked, category_pick, lives_remaining, correct_count, eliminated_at')
       .eq('room_id', roomId)
       .order('score', { ascending: false });
     if (data) setPlayers(data as PlayerRow[]);
@@ -92,6 +102,11 @@ export function RoomPlay() {
     void refreshRoom();
     void refreshPlayers();
   }, [roomId, refreshRoom, refreshPlayers]);
+
+  // Keep session_mode ref current for realtime callbacks.
+  useEffect(() => {
+    if (room?.session_mode) sessionModeRef.current = room.session_mode;
+  }, [room?.session_mode]);
 
   // Realtime subscription.
   useEffect(() => {
@@ -106,6 +121,10 @@ export function RoomPlay() {
         setMyPick(null);
         // Refresh players so the standings reflect the new scores from the reveal.
         void refreshPlayers();
+        // In endless, keep the question buffer topped up for subsequent rounds.
+        if (sessionModeRef.current === 'endless') {
+          void queueRoomQuestions({ room_id: roomId }).catch(() => undefined);
+        }
       },
     });
     return () => { unsub(); };
@@ -170,7 +189,10 @@ export function RoomPlay() {
   };
 
   const onAnswer = async (idx: number) => {
-    if (!room || !question || myPick !== null) return;
+    if (!room || !question) return;
+    // Block eliminated players from changing their pick.
+    const me = players.find((p) => p.player_uuid === playerUuid);
+    if (me?.eliminated_at) return;
     setMyPick(idx);
     try {
       await submitMpAnswer({ room_id: room.id, player_uuid: playerUuid, selected_index: idx });
@@ -232,7 +254,7 @@ export function RoomPlay() {
         </div>
         <CountdownBar ms={remaining} totalMs={10_000} label={`${(remaining / 1000).toFixed(1)}s`} />
         <div className="grid grid-cols-2 gap-2">
-          {CATEGORIES.map((c) => {
+          {CATEGORIES.filter((c) => c !== 'Random').map((c) => {
             const isMine = myCategoryPick === c;
             return (
               <button
@@ -259,13 +281,14 @@ export function RoomPlay() {
 
   // Generating phase
   if (room.status === 'generating') {
+    const countLabel = room.session_mode === 'endless' ? 'first 15' : `${room.question_count ?? 0}`;
     return (
       <div className="mx-auto max-w-lg px-4 sm:px-6 py-14 space-y-5 text-center">
         <div className="text-[11px] font-mono uppercase tracking-[0.28em] text-accent">
           Preparing arena
         </div>
         <h1 className="font-display text-3xl sm:text-4xl font-black text-ink-900">
-          Writing {room.question_count} questions…
+          Writing {countLabel} questions…
         </h1>
         <p className="text-ink-500 text-sm italic">
           Questions are generated fresh and fact-checked against Scripture.
@@ -282,12 +305,23 @@ export function RoomPlay() {
     const me = players.find((p) => p.player_uuid === playerUuid);
     const winner = players[0];
     const isWinner = me?.player_uuid === winner?.player_uuid;
+    const isEndlessRoom = room.session_mode === 'endless';
+    const isCoOp = isEndlessRoom && room.mp_variant === 'co_op';
+    const headline = isCoOp
+      ? `You survived ${room.current_q_index} rounds`
+      : isWinner
+        ? 'You won!'
+        : winner
+          ? `${winner.display_username} wins`
+          : 'Game over';
     return (
       <div className="mx-auto max-w-xl px-4 sm:px-6 py-10 space-y-6">
         <div className="space-y-1">
-          <div className="text-[11px] font-mono uppercase tracking-[0.28em] text-accent">Game over</div>
+          <div className="text-[11px] font-mono uppercase tracking-[0.28em] text-accent">
+            {isCoOp ? 'Team run' : 'Game over'}
+          </div>
           <h1 className="font-display text-4xl sm:text-5xl font-black text-ink-900">
-            {isWinner ? 'You won!' : winner ? `${winner.display_username} wins` : 'Game over'}
+            {headline}
           </h1>
         </div>
         <ul className="rounded-xl border border-rule overflow-hidden bg-card">
@@ -356,12 +390,17 @@ export function RoomPlay() {
   const totalMs = ends - opened;
   const remaining = Math.max(0, ends - now);
   const me = players.find((p) => p.player_uuid === playerUuid);
+  const isEndlessRoom = room.session_mode === 'endless';
+  const myEliminated = !!me?.eliminated_at;
+  const headerLabel = isEndlessRoom
+    ? `Q ${question.question_index + 1} · ${question.difficulty ?? room.difficulty} · ${room.category}`
+    : `Q ${question.question_index + 1} / ${room.question_count ?? '?'} · ${room.category}`;
 
   return (
     <div className="mx-auto max-w-2xl px-4 sm:px-6 py-6 sm:py-8 space-y-5">
       <div className="flex items-center justify-between gap-3">
         <div className="text-[11px] font-mono uppercase tracking-[0.2em] text-ink-400">
-          Q {question.question_index + 1} / {room.question_count} · {room.category}
+          {headerLabel}
         </div>
         <div className="flex items-center gap-2 text-sm">
           <span className="text-ink-400 text-xs uppercase tracking-wider">Score</span>
@@ -370,6 +409,14 @@ export function RoomPlay() {
           </span>
         </div>
       </div>
+      {isEndlessRoom && (
+        <MpLivesBar
+          variant={room.mp_variant}
+          sharedLives={room.shared_lives}
+          myLives={me?.lives_remaining ?? null}
+          eliminated={myEliminated}
+        />
+      )}
 
       <CountdownBar ms={remaining} totalMs={totalMs} label={`${(remaining / 1000).toFixed(1)}s`} />
 
@@ -380,18 +427,14 @@ export function RoomPlay() {
       <div className="space-y-2">
         {question.options.map((opt, i) => {
           const isMine = myPick === i;
-          const locked = myPick !== null;
           return (
             <button
               key={i}
               onClick={() => onAnswer(i)}
-              disabled={locked}
               className={`group w-full rounded-md border px-4 py-3 text-left transition ${
                 isMine
                   ? 'border-accent bg-accent/10 text-accent'
-                  : locked
-                    ? 'border-rule bg-card text-ink-400 cursor-default'
-                    : 'border-rule bg-card text-ink-800 hover:bg-page hover:border-accent/60'
+                  : 'border-rule bg-card text-ink-800 hover:bg-page hover:border-accent/60'
               }`}
             >
               <span className="mr-3 font-mono text-xs text-ink-400">
@@ -402,6 +445,10 @@ export function RoomPlay() {
           );
         })}
       </div>
+
+      <p className="text-center text-[11px] italic text-ink-400">
+        You can change your pick until the timer runs out.
+      </p>
 
       <AnswerPips players={players} playerUuid={playerUuid} />
 
@@ -549,6 +596,48 @@ function PulseBar() {
   return (
     <div className="h-2 rounded-full bg-rule/60 overflow-hidden">
       <div className="h-full w-1/3 bg-accent/60 animate-pulse" />
+    </div>
+  );
+}
+
+function MpLivesBar({
+  variant,
+  sharedLives,
+  myLives,
+  eliminated,
+}: {
+  variant: MpVariant | null;
+  sharedLives: number | null;
+  myLives: number | null;
+  eliminated: boolean;
+}) {
+  if (variant === 'co_op') {
+    const hearts = Array.from({ length: 3 }, (_, i) => i < (sharedLives ?? 0));
+    return (
+      <div className="flex items-center justify-between rounded-md border border-accent/30 bg-accent/5 px-3 py-2">
+        <div className="text-[10px] uppercase tracking-[0.2em] text-accent">Team lives</div>
+        <div className="flex items-center gap-1 text-lg">
+          {hearts.map((on, i) => (
+            <span key={i} className={on ? 'text-accent' : 'text-rule'}>{on ? '♥' : '♡'}</span>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  // battle_royale
+  const hearts = Array.from({ length: 3 }, (_, i) => i < (myLives ?? 0));
+  return (
+    <div className={`flex items-center justify-between rounded-md border px-3 py-2 ${
+      eliminated ? 'border-no/30 bg-no/5' : 'border-accent/30 bg-accent/5'
+    }`}>
+      <div className={`text-[10px] uppercase tracking-[0.2em] ${eliminated ? 'text-no' : 'text-accent'}`}>
+        {eliminated ? 'Eliminated' : 'Your lives'}
+      </div>
+      <div className="flex items-center gap-1 text-lg">
+        {hearts.map((on, i) => (
+          <span key={i} className={on ? 'text-accent' : 'text-rule'}>{on ? '♥' : '♡'}</span>
+        ))}
+      </div>
     </div>
   );
 }

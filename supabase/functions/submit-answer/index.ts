@@ -1,6 +1,9 @@
 import { adminClient, handleOptions, jsonResponse, errorResponse } from '../_shared/supabase-admin.ts';
 import { pointsForAnswer, type Difficulty, type Pace } from '../_shared/scoring.ts';
 
+const ENDLESS_LIFE_REGEN_EVERY = 7;
+const ENDLESS_MAX_LIVES = 3;
+
 Deno.serve(async (req) => {
   const pre = handleOptions(req);
   if (pre) return pre;
@@ -37,7 +40,7 @@ Deno.serve(async (req) => {
 
   const { data: question, error: qErr } = await db
     .from('questions')
-    .select('id, correct_index, insight, scripture_ref')
+    .select('id, correct_index, insight, scripture_ref, difficulty')
     .eq('id', session.current_question_id)
     .single();
 
@@ -48,19 +51,47 @@ Deno.serve(async (req) => {
   const timeMs = Math.max(0, now - openedAt);
 
   const isCorrect = selected_index !== null && selected_index === question.correct_index;
-  const { points, newStreak, multiplier } = pointsForAnswer({
-    difficulty: session.difficulty as Difficulty,
+  // Use the ACTUAL question's difficulty for scoring, not the picked one. In
+  // endless mode the ramp means later questions are harder and score higher.
+  const { points, newStreak, multiplier, basePoints, speedBonus } = pointsForAnswer({
+    difficulty: question.difficulty as Difficulty,
     pace: session.pace as Pace,
     isCorrect,
     timeMs,
     currentStreak: session.streak,
   });
 
+  const isEndless = session.session_mode === 'endless';
   const nextIndex = session.current_q_index + 1;
-  const isFinished = nextIndex >= session.question_count;
+
+  // --- life bookkeeping (endless only) ---
+  let newLives = session.lives_remaining;
+  let newCorrectCount = session.correct_count ?? 0;
+  let isFinished: boolean;
+
+  if (isEndless) {
+    if (isCorrect) {
+      newCorrectCount += 1;
+      // Life regen: every ENDLESS_LIFE_REGEN_EVERY correct answers IN A ROW
+      // grants +1 life, capped at ENDLESS_MAX_LIVES. Streak resets on any
+      // wrong answer, so this rewards sustained accuracy.
+      if (newStreak > 0 && newStreak % ENDLESS_LIFE_REGEN_EVERY === 0 && newLives < ENDLESS_MAX_LIVES) {
+        newLives += 1;
+      }
+    } else {
+      newLives = Math.max(0, (newLives ?? 0) - 1);
+    }
+    isFinished = newLives === 0;
+  } else {
+    isFinished = nextIndex >= session.question_count;
+  }
 
   // Conditional UPDATE: current_question_id must still match. Protects against
-  // double-submit races — only the first call updates the row.
+  // double-submit races — only the first call updates the row. Also extends
+  // expires_at so long endless runs aren't abandoned by the cleanup cron.
+  const newExpiresAt = isFinished
+    ? undefined
+    : new Date(Date.now() + 60 * 60 * 1000).toISOString();
   const { data: updated, error: updErr } = await db
     .from('solo_sessions')
     .update({
@@ -72,10 +103,13 @@ Deno.serve(async (req) => {
       total_time_ms: session.total_time_ms + timeMs,
       status: isFinished ? 'finished' : 'active',
       finished_at: isFinished ? new Date().toISOString() : null,
+      lives_remaining: isEndless ? newLives : session.lives_remaining,
+      correct_count: isEndless ? newCorrectCount : session.correct_count,
+      ...(newExpiresAt ? { expires_at: newExpiresAt } : {}),
     })
     .eq('id', session_id)
     .eq('current_question_id', question.id)
-    .select('score, streak, current_q_index, status')
+    .select('score, streak, current_q_index, status, lives_remaining, correct_count')
     .single();
 
   if (updErr || !updated) return errorResponse(409, 'Answer already submitted or session advanced');
@@ -89,6 +123,9 @@ Deno.serve(async (req) => {
     is_correct: isCorrect,
     correct_index: question.correct_index,
     points_awarded: points,
+    base_points: basePoints,
+    speed_bonus: speedBonus,
+    time_ms: timeMs,
     new_score: updated.score,
     new_streak: updated.streak,
     multiplier,
@@ -97,5 +134,7 @@ Deno.serve(async (req) => {
     session_status: updated.status,
     next_question_index: updated.current_q_index,
     total_time_ms: session.total_time_ms + timeMs,
+    lives_remaining: updated.lives_remaining,
+    correct_count: updated.correct_count,
   });
 });

@@ -10,7 +10,9 @@ const STORAGE_KEYS = {
 } as const;
 
 const MAX_HISTORY = 500;
-const SEND_WINDOW = 100;
+// Full history goes to the server on every request. 500 × 16 chars ≈ 8KB,
+// cheap, and endless runs expose repeats when the send window is too narrow.
+const SEND_WINDOW = 500;
 
 function isBrowser(): boolean {
   return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';

@@ -19,7 +19,7 @@ Deno.serve(async (req) => {
 
   const { data: room, error: roomErr } = await db
     .from('rooms')
-    .select('status, question_ids, current_q_index, current_q_opened_at, current_q_ends_at, question_count')
+    .select('status, question_ids, current_q_index, current_q_opened_at, current_q_ends_at, question_count, session_mode, shared_lives, mp_variant')
     .eq('id', room_id)
     .single();
 
@@ -33,7 +33,7 @@ Deno.serve(async (req) => {
   const questionId = room.question_ids[idx];
   const { data: q, error: qErr } = await db
     .from('questions')
-    .select('id, question_text, options, scripture_ref')
+    .select('id, question_text, options, scripture_ref, difficulty, category')
     .eq('id', questionId)
     .single();
 
@@ -45,8 +45,13 @@ Deno.serve(async (req) => {
     question_text: q.question_text,
     options: q.options,
     scripture_ref: q.scripture_ref,
+    difficulty: q.difficulty,
+    category: q.category,
     opened_at: room.current_q_opened_at,
     ends_at: room.current_q_ends_at,
     question_count: room.question_count,
+    session_mode: room.session_mode,
+    shared_lives: room.shared_lives,
+    mp_variant: room.mp_variant,
   });
 });
