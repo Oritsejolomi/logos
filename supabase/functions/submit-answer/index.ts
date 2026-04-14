@@ -87,7 +87,11 @@ Deno.serve(async (req) => {
   }
 
   // Conditional UPDATE: current_question_id must still match. Protects against
-  // double-submit races — only the first call updates the row.
+  // double-submit races — only the first call updates the row. Also extends
+  // expires_at so long endless runs aren't abandoned by the cleanup cron.
+  const newExpiresAt = isFinished
+    ? undefined
+    : new Date(Date.now() + 60 * 60 * 1000).toISOString();
   const { data: updated, error: updErr } = await db
     .from('solo_sessions')
     .update({
@@ -101,6 +105,7 @@ Deno.serve(async (req) => {
       finished_at: isFinished ? new Date().toISOString() : null,
       lives_remaining: isEndless ? newLives : session.lives_remaining,
       correct_count: isEndless ? newCorrectCount : session.correct_count,
+      ...(newExpiresAt ? { expires_at: newExpiresAt } : {}),
     })
     .eq('id', session_id)
     .eq('current_question_id', question.id)
