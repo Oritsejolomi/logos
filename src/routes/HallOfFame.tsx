@@ -7,6 +7,7 @@ import {
   type Difficulty,
   type LeaderboardEntry,
   type Pace,
+  type SessionMode,
 } from '../lib/api';
 
 function formatTime(ms: number): string {
@@ -23,6 +24,11 @@ const PACES: Pace[] = ['speedy', 'arcade', 'meditative'];
 const MODES = ['solo', 'multiplayer'] as const;
 type Mode = (typeof MODES)[number];
 
+const BOARDS: Array<{ id: SessionMode; label: string }> = [
+  { id: 'fixed', label: 'Fixed' },
+  { id: 'endless', label: 'Endless' },
+];
+
 type CategoryFilter = Category | 'all';
 type DifficultyFilter = Difficulty | 'all';
 type PaceFilter = Pace | 'all';
@@ -37,6 +43,7 @@ export function HallOfFame() {
   const difficulty = (params.get('difficulty') ?? 'all') as DifficultyFilter;
   const pace = (params.get('pace') ?? 'all') as PaceFilter;
   const mode = (params.get('mode') ?? 'all') as ModeFilter;
+  const board = (params.get('board') ?? 'fixed') as SessionMode;
 
   useEffect(() => {
     getLeaderboard(100)
@@ -47,13 +54,16 @@ export function HallOfFame() {
   const filtered = useMemo(() => {
     if (!scores) return null;
     return scores.filter((s) => {
+      // Primary board filter — fixed vs endless. Applied to every row.
+      // Rows from before the endless migration default to 'fixed'.
+      if ((s.session_mode ?? 'fixed') !== board) return false;
       if (category !== 'all' && s.category !== category) return false;
       if (difficulty !== 'all' && s.difficulty !== difficulty) return false;
       if (pace !== 'all' && s.pace !== pace) return false;
       if (mode !== 'all' && s.mode !== mode) return false;
       return true;
     });
-  }, [scores, category, difficulty, pace, mode]);
+  }, [scores, category, difficulty, pace, mode, board]);
 
   const updateFilter = (key: string, value: string) => {
     const next = new URLSearchParams(params);
@@ -74,8 +84,28 @@ export function HallOfFame() {
         </div>
         <h1 className="font-display text-4xl sm:text-5xl font-black text-ink-900">Hall of fame</h1>
         <p className="text-ink-500 text-sm italic">
-          Top 100 single-game scores. Equal scores ranked by total time. Filter by category, difficulty, pace, or mode.
+          Top 100 single-game scores. Equal scores ranked by total time.
         </p>
+      </div>
+
+      {/* Board tabs: Fixed / Endless live on separate leaderboards. */}
+      <div className="flex gap-2 border-b border-rule">
+        {BOARDS.map((b) => {
+          const active = board === b.id;
+          return (
+            <button
+              key={b.id}
+              onClick={() => updateFilter('board', b.id)}
+              className={`px-4 py-2 text-sm font-semibold transition ${
+                active
+                  ? 'text-accent border-b-2 border-accent -mb-px'
+                  : 'text-ink-400 hover:text-ink-700'
+              }`}
+            >
+              {b.label}
+            </button>
+          );
+        })}
       </div>
 
       {/* Filters */}
@@ -145,9 +175,10 @@ export function HallOfFame() {
                   <span className="flex-1 truncate font-medium text-ink-800">{s.username}</span>
                   <span className="hidden sm:inline text-[10px] uppercase tracking-wider text-ink-400">
                     {s.category} · {s.difficulty} · {s.pace} · {s.mode}
+                    {s.mp_variant && ` · ${s.mp_variant === 'battle_royale' ? 'BR' : 'co-op'}`}
                   </span>
                   <span className="text-xs text-ink-400 hidden md:inline tabular-nums">
-                    {formatTime(s.total_time_ms)}
+                    {board === 'endless' ? `${s.question_count ?? 0}Q · ` : ''}{formatTime(s.total_time_ms)}
                   </span>
                   <span className="font-mono text-accent tabular-nums text-lg font-semibold">{s.score}</span>
                 </li>

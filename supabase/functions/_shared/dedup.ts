@@ -17,7 +17,7 @@ export function sanitizeRecentHashes(input: unknown): string[] {
     if (typeof h !== 'string') continue;
     const cleaned = h.trim().toLowerCase();
     if (/^[0-9a-f]{16,64}$/.test(cleaned)) out.push(normalizeHashPrefix(cleaned));
-    if (out.length >= 100) break;
+    if (out.length >= 500) break;
   }
   return out;
 }

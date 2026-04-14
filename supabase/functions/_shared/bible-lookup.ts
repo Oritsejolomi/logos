@@ -5,26 +5,26 @@ import { parseScriptureRef, validateScriptureRef } from './bible-refs.ts';
 // Ordered so the judge sees them in a consistent sequence.
 const TRANSLATIONS = ['WEB', 'KJV', 'ASV'] as const;
 
-// Fetches the literal verse text for a scripture reference across every
-// loaded translation. Returns a human-readable block like:
+export type TranslationMode = 'one' | 'all';
+
+// Fetches the literal verse text for a scripture reference. By default returns
+// only the WEB translation in a compact format — three translations cost ~3x
+// the tokens for the judge call and rarely change the verdict. Callers that
+// genuinely need translation comparison (questions about specific word choices)
+// can pass mode='all' to opt in.
 //
-//   WEB — Genesis 1:1
-//   In the beginning, God created the heavens and the earth.
+// Default ('one') returns:
 //
-//   KJV — Genesis 1:1
-//   In the beginning God created the heaven and the earth.
+//   Genesis 1:1 (WEB): In the beginning, God created the heavens and the earth.
 //
-//   ASV — Genesis 1:1
-//   In the beginning God created the heavens and the earth.
-//
-// Returns null if the reference is invalid or no translation has the verses.
-export async function lookupVerseText(ref: string): Promise<string | null> {
+// Mode 'all' returns the original three-block format with WEB+KJV+ASV.
+export async function lookupVerseText(ref: string, mode: TranslationMode = 'one'): Promise<string | null> {
   const check = validateScriptureRef(ref);
   if (!check.ok || !check.parsed) return null;
   const { book, chapter, verseStart, verseEnd } = check.parsed;
 
   const db = adminClient();
-  const { data, error } = await db
+  let query = db
     .from('bible_verses')
     .select('translation, verse, text')
     .eq('book', book)
@@ -33,7 +33,9 @@ export async function lookupVerseText(ref: string): Promise<string | null> {
     .lte('verse', verseEnd)
     .order('translation', { ascending: true })
     .order('verse', { ascending: true });
+  if (mode === 'one') query = query.eq('translation', 'WEB');
 
+  const { data, error } = await query;
   if (error || !data || data.length === 0) return null;
 
   // Group by translation, preserve our preferred ordering.
@@ -44,27 +46,31 @@ export async function lookupVerseText(ref: string): Promise<string | null> {
     byTranslation.get(t)!.push({ verse: row.verse, text: row.text });
   }
 
+  const refLabel = `${book} ${chapter}:${verseStart}${verseEnd !== verseStart ? `-${verseEnd}` : ''}`;
+
+  if (mode === 'one') {
+    const verses = byTranslation.get('WEB');
+    if (!verses || verses.length === 0) return null;
+    const body = verses.map((v) => v.text).join(' ');
+    return `${refLabel} (WEB): ${body}`;
+  }
+
   const blocks: string[] = [];
   for (const t of TRANSLATIONS) {
     const verses = byTranslation.get(t);
     if (!verses || verses.length === 0) continue;
-    const header = `${t} — ${book} ${chapter}:${verseStart}${verseEnd !== verseStart ? `-${verseEnd}` : ''}`;
     const body = verses.map((v) => v.text).join(' ');
-    blocks.push(`${header}\n${body}`);
+    blocks.push(`${t} — ${refLabel}\n${body}`);
   }
-  // If the corpus has translations we haven't listed in TRANSLATIONS yet,
-  // still include them so the judge sees everything available.
   for (const [t, verses] of byTranslation) {
     if ((TRANSLATIONS as readonly string[]).includes(t)) continue;
-    const header = `${t} — ${book} ${chapter}:${verseStart}${verseEnd !== verseStart ? `-${verseEnd}` : ''}`;
     const body = verses.map((v) => v.text).join(' ');
-    blocks.push(`${header}\n${body}`);
+    blocks.push(`${t} — ${refLabel}\n${body}`);
   }
-
   if (blocks.length === 0) return null;
   return blocks.join('\n\n');
 }
 
 // Convenience wrapper so functions can pass this directly as the VerseLookup
-// parameter on generateQuestion().
-export const verseLookup = (ref: string) => lookupVerseText(ref);
+// parameter on generateQuestion(). Defaults to single-translation (WEB).
+export const verseLookup = (ref: string) => lookupVerseText(ref, 'one');

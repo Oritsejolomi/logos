@@ -9,6 +9,7 @@ const CATEGORIES = new Set([
   "Paul's Letters",
   'Theology',
   'Church History',
+  'Life & Today',
 ]);
 
 Deno.serve(async (req) => {

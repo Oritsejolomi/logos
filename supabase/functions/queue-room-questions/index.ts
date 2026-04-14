@@ -2,28 +2,26 @@ import { adminClient, handleOptions, jsonResponse, errorResponse } from '../_sha
 import { generateQuestion } from '../_shared/gemini.ts';
 import { verseLookup } from '../_shared/bible-lookup.ts';
 import { sha256Hex } from '../_shared/dedup.ts';
-import { TIMER_SECONDS, type Difficulty, type Pace } from '../_shared/scoring.ts';
+import type { Difficulty } from '../_shared/scoring.ts';
 import { rampingStateAt } from '../_shared/ramping.ts';
 
-// Idempotent question generator for a room. Called after tick-room transitions
-// the room to 'generating'. Fixed mode generates the full question_count up
-// front. Endless mode generates an initial rolling buffer (ENDLESS_INITIAL)
-// and relies on queue-room-questions to top up as rounds advance.
+// Rolling top-up for endless MP rooms. Keeps the room's question_ids array
+// BUFFER questions ahead of current_q_index. Client fires this after each
+// round closes. Fire-and-forget from the client.
 
-const ENDLESS_INITIAL = 15;
+const BUFFER = 15;
 
 function passageKey(ref: string): string {
   return ref.trim().toLowerCase().replace(/\s+/g, ' ').replace(/[:\-–,].*$/, '').trim();
 }
 
 async function bankLookupExcluding(
+  db: ReturnType<typeof adminClient>,
   category: string,
   difficulty: Difficulty,
   excludeIds: Set<string>,
   excludePassageKeys: Set<string>,
 ): Promise<{ id: string; scripture_ref: string } | null> {
-  const db = adminClient();
-  const excludeList = [...excludeIds];
   let query = db
     .from('questions')
     .select('id, scripture_ref')
@@ -32,9 +30,8 @@ async function bankLookupExcluding(
     .is('deleted_at', null)
     .order('quality_score', { ascending: false })
     .limit(80);
-  if (excludeList.length > 0) {
-    query = query.not('id', 'in', `(${excludeList.map((id) => `"${id}"`).join(',')})`);
-  }
+  const excludeList = [...excludeIds];
+  if (excludeList.length > 0) query = query.not('id', 'in', `(${excludeList.map((id) => `"${id}"`).join(',')})`);
   const { data } = await query;
   if (!data) return null;
   for (const row of data) {
@@ -52,10 +49,10 @@ function normalizeAnswer(s: string): string {
 }
 
 async function fetchBankAnswerKeys(
+  db: ReturnType<typeof adminClient>,
   category: string,
   difficulty: Difficulty,
 ): Promise<string[]> {
-  const db = adminClient();
   const { data } = await db
     .from('questions')
     .select('options, correct_index')
@@ -78,13 +75,13 @@ async function fetchBankAnswerKeys(
 }
 
 async function generateOne(
+  db: ReturnType<typeof adminClient>,
   category: string,
   difficulty: Difficulty,
   avoidPassages: string[],
   avoidAnswerKeys: string[],
   endlessDepth: number,
 ): Promise<{ id: string; scripture_ref: string } | null> {
-  const db = adminClient();
   try {
     const generated = await generateQuestion(
       { category, difficulty, recentHashes: [], avoidPassages, avoidAnswerKeys, endlessDepth },
@@ -105,7 +102,6 @@ async function generateOne(
       })
       .select('id, scripture_ref')
       .single();
-
     if (error && error.code === '23505') {
       const { data: existing } = await db
         .from('questions')
@@ -136,63 +132,63 @@ Deno.serve(async (req) => {
 
   const { data: room } = await db.from('rooms').select('*').eq('id', room_id).single();
   if (!room) return errorResponse(404, 'Room not found');
-  if (room.status === 'in_progress') return jsonResponse({ ok: true, already_started: true });
-  if (room.status !== 'generating') return errorResponse(409, `Room is ${room.status}, not generating`);
-  if (!room.category) return errorResponse(500, 'Room has no category');
+  if (room.session_mode !== 'endless') return jsonResponse({ ok: true, noop: 'not endless' });
+  if (room.status !== 'in_progress') return jsonResponse({ ok: true, skipped: `status=${room.status}` });
 
+  const currentIds: string[] = (room.question_ids as string[]) ?? [];
+  const currentIdx: number = (room.current_q_index as number) ?? 0;
+  const target = currentIdx + BUFFER;
+  if (currentIds.length >= target) return jsonResponse({ ok: true, already_full: true, length: currentIds.length });
+
+  // Idempotent lock via generation_started_at.
   const { data: locked } = await db
     .from('rooms')
     .update({ generation_started_at: new Date().toISOString() })
     .eq('id', room_id)
-    .eq('status', 'generating')
     .or('generation_started_at.is.null,generation_started_at.lt.' + new Date(Date.now() - 60_000).toISOString())
     .select('id')
     .single();
+  if (!locked) return jsonResponse({ ok: true, noop: 'already queueing' });
 
-  if (!locked) return jsonResponse({ ok: true, noop: 'already generating' });
-
-  const isEndless = room.session_mode === 'endless';
   const pickedDifficulty = room.difficulty as Difficulty;
-  const needed = isEndless ? ENDLESS_INITIAL : (room.question_count as number);
-
-  const chosenIds: string[] = [];
-  const chosenIdSet = new Set<string>();
+  const chosenIds: string[] = [...currentIds];
+  const chosenIdSet = new Set<string>(chosenIds);
   const passageKeys = new Set<string>();
 
-  // Phase 1: bank draining with per-slot ramping.
-  for (let i = 0; i < needed; i++) {
-    const slotRamp = isEndless ? rampingStateAt(pickedDifficulty, i) : { difficulty: pickedDifficulty, endlessDepth: 0 };
-    if (slotRamp.endlessDepth > 0) continue; // depth > 0 skips bank
-    const bankHit = await bankLookupExcluding(
-      room.category,
-      slotRamp.difficulty,
-      chosenIdSet,
-      passageKeys,
-    );
-    if (!bankHit) continue;
-    chosenIds.push(bankHit.id);
-    chosenIdSet.add(bankHit.id);
-    passageKeys.add(passageKey(bankHit.scripture_ref));
+  // Build passage-key exclusion from already-chosen questions.
+  if (chosenIds.length > 0) {
+    const { data: rows } = await db
+      .from('questions')
+      .select('scripture_ref')
+      .in('id', chosenIds);
+    for (const r of rows ?? []) if (r.scripture_ref) passageKeys.add(passageKey(r.scripture_ref));
+  }
+
+  const slotsToFill = target - chosenIds.length;
+
+  // Phase 1: bank (depth 0 only).
+  for (let i = 0; i < slotsToFill; i++) {
+    const absIdx = chosenIds.length;
+    const slot = rampingStateAt(pickedDifficulty, absIdx);
+    if (slot.endlessDepth > 0) continue;
+    const hit = await bankLookupExcluding(db, room.category as string, slot.difficulty, chosenIdSet, passageKeys);
+    if (!hit) continue;
+    chosenIds.push(hit.id);
+    chosenIdSet.add(hit.id);
+    passageKeys.add(passageKey(hit.scripture_ref));
   }
 
   // Phase 2: parallel generation for any remaining slots.
-  const stillNeeded = needed - chosenIds.length;
+  const stillNeeded = target - chosenIds.length;
   if (stillNeeded > 0) {
     const baseAvoid = [...passageKeys];
-    // Generation slots take the ramp values starting from the first unfilled slot.
     const genStartIdx = chosenIds.length;
-    const genSlots = Array.from({ length: stillNeeded }, (_, i) => {
-      const absIdx = genStartIdx + i;
-      return isEndless
-        ? rampingStateAt(pickedDifficulty, absIdx)
-        : { difficulty: pickedDifficulty, endlessDepth: 0 };
-    });
-    // Cache bank answer-key lookups per difficulty since the room's category is fixed.
+    const genSlots = Array.from({ length: stillNeeded }, (_, i) => rampingStateAt(pickedDifficulty, genStartIdx + i));
     const bankKeyCache = new Map<string, string[]>();
     const fetchBankKeys = async (diff: Difficulty): Promise<string[]> => {
       let v = bankKeyCache.get(diff);
       if (!v) {
-        v = await fetchBankAnswerKeys(room.category, diff);
+        v = await fetchBankAnswerKeys(db, room.category as string, diff);
         bankKeyCache.set(diff, v);
       }
       return v;
@@ -200,54 +196,25 @@ Deno.serve(async (req) => {
     const results = await Promise.allSettled(
       genSlots.map(async (slot) => {
         const bankKeys = await fetchBankKeys(slot.difficulty);
-        return generateOne(room.category, slot.difficulty, baseAvoid, bankKeys, slot.endlessDepth);
+        return generateOne(db, room.category as string, slot.difficulty, baseAvoid, bankKeys, slot.endlessDepth);
       }),
     );
     for (const r of results) {
-      if (r.status === 'fulfilled' && r.value) {
-        if (chosenIdSet.has(r.value.id)) continue;
-        const k = passageKey(r.value.scripture_ref);
-        if (passageKeys.has(k)) continue;
-        chosenIds.push(r.value.id);
-        chosenIdSet.add(r.value.id);
-        passageKeys.add(k);
-      }
+      if (r.status !== 'fulfilled' || !r.value) continue;
+      if (chosenIdSet.has(r.value.id)) continue;
+      const k = passageKey(r.value.scripture_ref);
+      if (passageKeys.has(k)) continue;
+      chosenIds.push(r.value.id);
+      chosenIdSet.add(r.value.id);
+      passageKeys.add(k);
     }
   }
 
-  if (chosenIds.length < needed) {
-    await db.from('rooms').update({ generation_started_at: null }).eq('id', room_id);
-    return errorResponse(503, `Only generated ${chosenIds.length}/${needed} questions, retry`);
-  }
-
-  // Timer for the first question uses the ramped difficulty at index 0.
-  const firstDifficulty = isEndless ? rampingStateAt(pickedDifficulty, 0).difficulty : pickedDifficulty;
-  const timerSecs = TIMER_SECONDS[room.pace as Pace][firstDifficulty];
-  const now = Date.now();
-  const INSIGHT = 3_000;
-  const openedAt = new Date(now + INSIGHT).toISOString();
-  const endsAt = new Date(now + INSIGHT + timerSecs * 1000).toISOString();
-
-  const { data: started, error: startErr } = await db
+  const { error: updErr } = await db
     .from('rooms')
-    .update({
-      status: 'in_progress',
-      question_ids: chosenIds,
-      current_q_index: 0,
-      current_q_opened_at: openedAt,
-      current_q_ends_at: endsAt,
-    })
-    .eq('id', room_id)
-    .eq('status', 'generating')
-    .select('id, current_q_opened_at, current_q_ends_at')
-    .single();
+    .update({ question_ids: chosenIds, generation_started_at: null })
+    .eq('id', room_id);
+  if (updErr) return errorResponse(500, `Failed to update question_ids: ${updErr.message}`);
 
-  if (startErr || !started) return errorResponse(500, 'Failed to transition to in_progress');
-
-  return jsonResponse({
-    ok: true,
-    question_count: chosenIds.length,
-    current_q_opened_at: started.current_q_opened_at,
-    current_q_ends_at: started.current_q_ends_at,
-  });
+  return jsonResponse({ ok: true, length: chosenIds.length, target });
 });

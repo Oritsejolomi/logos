@@ -7,6 +7,8 @@ import { FUNCTIONS_BASE, SUPABASE_ANON_KEY } from './supabase';
 export type Difficulty = 'beginner' | 'intermediate' | 'advanced';
 export type Pace = 'speedy' | 'arcade' | 'meditative';
 export type QuestionCount = 5 | 10 | 15;
+export type SessionMode = 'fixed' | 'endless';
+export type MpVariant = 'battle_royale' | 'co_op';
 
 export const CATEGORIES = [
   'Old Testament',
@@ -17,6 +19,8 @@ export const CATEGORIES = [
   "Paul's Letters",
   'Theology',
   'Church History',
+  'Life & Today',
+  'Random',
 ] as const;
 export type Category = (typeof CATEGORIES)[number];
 
@@ -81,8 +85,10 @@ export function createSoloSession(args: {
   category: Category;
   difficulty: Difficulty;
   pace: Pace;
-  question_count: QuestionCount;
-}): Promise<SoloSessionHandle> {
+  question_count: QuestionCount | null;
+  recent_hashes: string[];
+  session_mode: SessionMode;
+}): Promise<SoloSessionHandle & { session_mode: SessionMode; lives_remaining: number | null }> {
   return call('create-solo-session', args);
 }
 
@@ -91,7 +97,10 @@ export interface SoloSessionState {
   category: Category;
   difficulty: Difficulty;
   pace: Pace;
-  question_count: QuestionCount;
+  question_count: QuestionCount | null;
+  session_mode: SessionMode;
+  lives_remaining: number | null;
+  correct_count: number;
   status: 'active' | 'finished' | 'abandoned';
   current_q_index: number;
   score: number;
@@ -112,6 +121,10 @@ export interface SoloQuestion {
   question_text: string;
   options: string[];
   scripture_ref: string;
+  category?: Category;
+  difficulty?: Difficulty;
+  endless_depth?: number;
+  lives_remaining?: number | null;
   question_index: number;
   opened_at: string;
   timer_seconds: number;
@@ -129,6 +142,9 @@ export interface SoloAnswerResult {
   is_correct: boolean;
   correct_index: number;
   points_awarded: number;
+  base_points: number;
+  speed_bonus: number;
+  time_ms: number;
   new_score: number;
   new_streak: number;
   multiplier: number;
@@ -137,6 +153,8 @@ export interface SoloAnswerResult {
   session_status: 'active' | 'finished';
   next_question_index: number;
   total_time_ms: number;
+  lives_remaining?: number | null;
+  correct_count?: number;
 }
 
 export function submitSoloAnswer(args: {
@@ -158,7 +176,8 @@ export function prefetchNext(args: {
 export function queueSoloQuestions(args: {
   session_id: string;
   player_uuid: string;
-}): Promise<{ ok: boolean; queued?: number; requested?: number; already_full?: boolean; noop?: string }> {
+  recent_hashes: string[];
+}): Promise<{ ok: boolean; queued?: number; target?: number; already_full?: boolean; noop?: string }> {
   return call('queue-solo-questions', args);
 }
 
@@ -185,9 +204,11 @@ export interface LeaderboardEntry {
   category: Category;
   difficulty: Difficulty;
   pace: Pace;
-  question_count: QuestionCount;
+  question_count: QuestionCount | null;
   total_time_ms: number;
   mode: 'solo' | 'multiplayer';
+  session_mode: SessionMode;
+  mp_variant: MpVariant | null;
   created_at: string;
 }
 
@@ -208,8 +229,10 @@ export function createRoom(args: {
   host_username: string;
   difficulty: Difficulty;
   pace: Pace;
-  question_count: QuestionCount;
+  question_count: QuestionCount | null;
   max_players?: number;
+  session_mode: SessionMode;
+  mp_variant?: MpVariant;
 }): Promise<CreateRoomResult> {
   return call('create-room', args);
 }
@@ -222,7 +245,9 @@ export interface JoinRoomResult {
   is_host: boolean;
   difficulty: Difficulty;
   pace: Pace;
-  question_count: QuestionCount;
+  question_count: QuestionCount | null;
+  session_mode?: SessionMode;
+  mp_variant?: MpVariant | null;
 }
 
 export function joinRoom(args: {
@@ -277,9 +302,14 @@ export interface MultiplayerQuestion {
   question_text: string;
   options: string[];
   scripture_ref: string;
+  difficulty?: Difficulty;
+  category?: Category;
   opened_at: string;
   ends_at: string;
-  question_count: QuestionCount;
+  question_count: QuestionCount | null;
+  session_mode?: SessionMode;
+  shared_lives?: number | null;
+  mp_variant?: MpVariant | null;
 }
 
 export function getMpQuestion(args: { room_id: string }): Promise<MultiplayerQuestion> {
@@ -289,10 +319,20 @@ export function getMpQuestion(args: { room_id: string }): Promise<MultiplayerQue
 export interface MultiplayerAnswerResult {
   is_correct: boolean;
   points_awarded: number;
+  base_points?: number;
+  speed_bonus?: number;
   new_score: number;
   new_streak: number;
   multiplier: number;
   time_ms: number;
+  lives_remaining?: number | null;
+  correct_count?: number | null;
+  eliminated?: boolean;
+  shared_lives?: number | null;
+}
+
+export function queueRoomQuestions(args: { room_id: string }): Promise<{ ok: boolean; length?: number; target?: number }> {
+  return call('queue-room-questions', args);
 }
 
 export function submitMpAnswer(args: {

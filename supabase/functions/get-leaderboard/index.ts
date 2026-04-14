@@ -12,7 +12,7 @@ Deno.serve(async (req) => {
   const db = adminClient();
   const { data, error } = await db
     .from('scores')
-    .select('id, username, score, category, difficulty, pace, question_count, total_time_ms, mode, created_at')
+    .select('id, username, score, category, difficulty, pace, question_count, total_time_ms, mode, session_mode, mp_variant, created_at')
     .order('score', { ascending: false })
     .order('total_time_ms', { ascending: true })
     .limit(limit);

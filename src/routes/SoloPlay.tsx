@@ -7,6 +7,7 @@ import {
   postScore,
   queueSoloQuestions,
   submitSoloAnswer,
+  type SessionMode,
   type SoloAnswerResult,
   type SoloQuestion,
 } from '../lib/api';
@@ -19,6 +20,8 @@ import {
 
 type Phase = 'loading' | 'question' | 'reveal' | 'finished';
 
+const ENDLESS_MAX_LIVES = 3;
+
 export function SoloPlay() {
   const [params] = useSearchParams();
   const sessionId = params.get('session') ?? '';
@@ -26,6 +29,8 @@ export function SoloPlay() {
   const difficulty = params.get('difficulty') ?? '';
   const pace = params.get('pace') ?? '';
   const questionCount = Number(params.get('count') ?? '5');
+  const sessionMode = (params.get('mode') ?? 'fixed') as SessionMode;
+  const isEndless = sessionMode === 'endless';
   const navigate = useNavigate();
 
   const [phase, setPhase] = useState<Phase>('loading');
@@ -35,6 +40,9 @@ export function SoloPlay() {
   const [score, setScore] = useState(0);
   const [streak, setStreak] = useState(0);
   const [streakPulse, setStreakPulse] = useState(false);
+  const [lives, setLives] = useState<number>(isEndless ? ENDLESS_MAX_LIVES : 0);
+  const [correctCount, setCorrectCount] = useState(0);
+  const [questionsSurvived, setQuestionsSurvived] = useState(0);
   const [err, setErr] = useState<string | null>(null);
   const [postingScore, setPostingScore] = useState(false);
   const [postedRank, setPostedRank] = useState<number | null>(null);
@@ -67,16 +75,13 @@ export function SoloPlay() {
   useEffect(() => {
     if (!sessionId) { setErr('No session id in URL'); return; }
 
-    // Check session status first. If the session is already finished (e.g.
-    // the user navigated here via a direct URL after posting their score),
-    // jump straight to the finished phase instead of trying to load Q1 —
-    // which would hit a 409 from get-question and render a raw error page.
     (async () => {
       try {
         const state = await getSoloState({ session_id: sessionId, player_uuid: playerUuid });
         if (state.status === 'finished') {
           setScore(state.score);
           setStreak(state.streak);
+          if (isEndless) setQuestionsSurvived(state.current_q_index);
           setPhase('finished');
           return;
         }
@@ -84,9 +89,11 @@ export function SoloPlay() {
           setErr('This session was abandoned. Start a new one from the home screen.');
           return;
         }
-        // Active session — load Q1 and kick off the queue filler.
+        if (isEndless && typeof state.lives_remaining === 'number') {
+          setLives(state.lives_remaining);
+        }
         void loadQuestion();
-        void queueSoloQuestions({ session_id: sessionId, player_uuid: playerUuid }).catch(() => undefined);
+        void queueSoloQuestions({ session_id: sessionId, player_uuid: playerUuid, recent_hashes: recentHashesForRequest() }).catch(() => undefined);
       } catch (e) {
         setErr((e as Error).message);
       }
@@ -127,15 +134,26 @@ export function SoloPlay() {
         player_uuid: playerUuid,
         selected_index: idx,
       });
-      // Record the content hash (not the question_id UUID) so cross-session
-      // dedup actually works. Fixed bug: was previously slicing question_id.
       if (question.content_hash_16) {
         recordQuestionSeen(question.content_hash_16);
       }
       setResult(r);
       setScore(r.new_score);
       setStreak(r.new_streak);
-      setPhase(r.session_status === 'finished' ? 'finished' : 'reveal');
+      if (isEndless) {
+        if (typeof r.lives_remaining === 'number') setLives(r.lives_remaining);
+        if (typeof r.correct_count === 'number') setCorrectCount(r.correct_count);
+        setQuestionsSurvived(r.next_question_index);
+      }
+      setPhase('reveal');
+      // Keep the rolling buffer topped up.
+      if (isEndless && r.session_status === 'active') {
+        void queueSoloQuestions({
+          session_id: sessionId,
+          player_uuid: playerUuid,
+          recent_hashes: recentHashesForRequest(),
+        }).catch(() => undefined);
+      }
     } catch (e) {
       setErr((e as Error).message);
       setPhase('question');
@@ -143,6 +161,10 @@ export function SoloPlay() {
   };
 
   const nextQuestion = () => {
+    if (result?.session_status === 'finished') {
+      setPhase('finished');
+      return;
+    }
     void loadQuestion();
   };
 
@@ -200,7 +222,15 @@ export function SoloPlay() {
     return (
       <div className="mx-auto max-w-xl px-4 sm:px-6 py-10 space-y-5">
         <ContextChips category={category} difficulty={difficulty} pace={pace} />
-        <h1 className="font-display text-4xl sm:text-5xl font-black text-ink-900">Game over</h1>
+        <h1 className="font-display text-4xl sm:text-5xl font-black text-ink-900">
+          {isEndless ? 'You ran out of lives' : 'Game over'}
+        </h1>
+        {isEndless && (
+          <div className="rounded-xl border border-rule bg-card p-5">
+            <div className="text-[11px] uppercase tracking-[0.2em] text-ink-400">Questions survived</div>
+            <div className="font-mono text-4xl text-ink-900 tabular-nums mt-1 font-bold">{questionsSurvived}</div>
+          </div>
+        )}
         <div className="rounded-xl border border-accent/30 bg-accent/5 p-6">
           <div className="text-[11px] uppercase tracking-[0.2em] text-ink-400">Final score</div>
           <div className="font-mono text-6xl text-accent tabular-nums mt-1 font-bold">{score}</div>
@@ -230,17 +260,26 @@ export function SoloPlay() {
   }
 
   if (phase === 'reveal' && result && question) {
+    const isLast = result.session_status === 'finished';
+    const displayCategory = question.category ?? category;
+    const displayDifficulty = question.difficulty ?? difficulty;
+    const breakdown = result.is_correct
+      ? `${result.base_points} base + ${result.speed_bonus} speed × ×${result.multiplier} streak = ${result.points_awarded}`
+      : null;
     return (
       <div className="mx-auto max-w-2xl px-4 sm:px-6 py-6 sm:py-8 space-y-5">
         <TopBar
-          category={category}
-          difficulty={difficulty}
+          category={displayCategory}
+          difficulty={displayDifficulty}
           pace={pace}
           index={question.question_index}
           total={questionCount}
           score={score}
           streak={streak}
           streakPulse={streakPulse}
+          isEndless={isEndless}
+          lives={lives}
+          correctCount={correctCount}
         />
         <h2 className="font-display text-2xl sm:text-3xl font-bold leading-snug text-ink-900">
           {question.question_text}
@@ -268,9 +307,10 @@ export function SoloPlay() {
           scriptureRef={result.scripture_ref}
           correctBanner={
             result.is_correct
-              ? `Correct · +${result.points_awarded} points${result.multiplier > 1 ? ` (×${result.multiplier})` : ''}`
+              ? `Correct · +${result.points_awarded} points`
               : lastPick === null ? 'Timed out' : 'Not quite'
           }
+          breakdown={breakdown}
           isCorrect={result.is_correct}
           flagged={flagged}
           flagging={flagging}
@@ -280,7 +320,7 @@ export function SoloPlay() {
           onClick={nextQuestion}
           className="w-full rounded-md bg-accent px-4 py-3 text-card font-semibold hover:bg-accent-soft transition"
         >
-          Next question
+          {isLast ? (isEndless ? 'See final score' : 'See final score') : 'Next question'}
         </button>
       </div>
     );
@@ -289,17 +329,22 @@ export function SoloPlay() {
   if (question) {
     const totalMs = question.timer_seconds * 1000;
     const pct = timeLeft === null ? 100 : Math.max(0, (timeLeft / totalMs) * 100);
+    const displayCategory = question.category ?? category;
+    const displayDifficulty = question.difficulty ?? difficulty;
     return (
       <div className="mx-auto max-w-2xl px-4 sm:px-6 py-6 sm:py-8 space-y-5">
         <TopBar
-          category={category}
-          difficulty={difficulty}
+          category={displayCategory}
+          difficulty={displayDifficulty}
           pace={pace}
           index={question.question_index}
           total={questionCount}
           score={score}
           streak={streak}
           streakPulse={streakPulse}
+          isEndless={isEndless}
+          lives={lives}
+          correctCount={correctCount}
         />
         <TimerBar pct={pct} timeLeftMs={timeLeft ?? totalMs} />
         <h2 className="font-display text-2xl sm:text-3xl font-bold leading-snug text-ink-900">
@@ -335,12 +380,19 @@ function TopBar(props: {
   score: number;
   streak: number;
   streakPulse: boolean;
+  isEndless: boolean;
+  lives: number;
+  correctCount: number;
 }) {
   return (
     <div className="space-y-3">
       <ContextChips category={props.category} difficulty={props.difficulty} pace={props.pace} />
       <div className="flex items-center justify-between gap-3">
-        <ProgressDots index={props.index} total={props.total} />
+        {props.isEndless ? (
+          <LivesIndicator lives={props.lives} questionIndex={props.index} streak={props.streak} />
+        ) : (
+          <ProgressDots index={props.index} total={props.total} />
+        )}
         <div className="flex items-center gap-3 text-sm">
           <span className="text-ink-400 text-xs uppercase tracking-wider">Score</span>
           <span className="font-mono text-lg text-accent font-bold tabular-nums">{props.score}</span>
@@ -381,8 +433,35 @@ function ProgressDots({ index, total }: { index: number; total: number }) {
   );
 }
 
+function LivesIndicator({ lives, questionIndex, streak }: { lives: number; questionIndex: number; streak: number }) {
+  const hearts = Array.from({ length: 3 }, (_, i) => i < lives);
+  // Regen progress: next life when streak hits the next multiple of 7.
+  // Streak resets on any wrong answer, so this counter resets too.
+  const sinceRegen = streak % 7;
+  const toNextRegen = 7 - sinceRegen;
+  return (
+    <div className="flex items-center gap-3">
+      <div className="flex items-center gap-1 text-lg" title={`${lives} lives remaining`}>
+        {hearts.map((on, i) => (
+          <span key={i} className={on ? 'text-accent' : 'text-rule'}>
+            {on ? '♥' : '♡'}
+          </span>
+        ))}
+      </div>
+      <div className="flex items-center gap-2 text-[10px] font-mono text-ink-400 uppercase tracking-wider">
+        <span>Q {questionIndex + 1}</span>
+        {lives < 3 && (
+          <span className="text-accent/70" title="Answer 7 correct in a row to earn a life back. A wrong answer resets the streak.">
+            +1 life in {toNextRegen} more in a row
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function StreakBadge({ streak, pulse }: { streak: number; pulse: boolean }) {
-  const mult = streak >= 5 ? '1.5' : streak === 4 ? '1.3' : streak === 3 ? '1.2' : streak === 2 ? '1.1' : '1.0';
+  const mult = streakMultiplierDisplay(streak);
   return (
     <span
       className={`inline-flex items-center gap-1 rounded-full border border-accent/50 bg-accent/10 px-2.5 py-1 text-xs font-mono text-accent font-medium transition-transform duration-300 ${
@@ -393,6 +472,15 @@ function StreakBadge({ streak, pulse }: { streak: number; pulse: boolean }) {
       🔥 {streak} · ×{mult}
     </span>
   );
+}
+
+function streakMultiplierDisplay(streak: number): string {
+  if (streak <= 1) return '1.0';
+  if (streak === 2) return '1.1';
+  if (streak === 3) return '1.2';
+  if (streak === 4) return '1.3';
+  const m = 1.5 + 0.1 * (streak - 5);
+  return m.toFixed(1);
 }
 
 function TimerBar({ pct, timeLeftMs }: { pct: number; timeLeftMs: number }) {
@@ -418,6 +506,7 @@ function InsightCard(props: {
   insight: string;
   scriptureRef: string;
   correctBanner: string;
+  breakdown: string | null;
   isCorrect: boolean;
   flagged: boolean;
   flagging: boolean;
@@ -439,6 +528,11 @@ function InsightCard(props: {
           {props.flagged ? '✓ Flagged' : props.flagging ? 'Flagging…' : 'Flag this question'}
         </button>
       </div>
+      {props.breakdown && (
+        <div className="px-4 pt-3 text-[11px] font-mono text-ink-500 tabular-nums">
+          {props.breakdown}
+        </div>
+      )}
       <div className="p-5 space-y-3">
         <div className="text-[10px] uppercase tracking-[0.22em] text-accent font-semibold">Insight</div>
         <p className="font-display text-base text-ink-800 leading-relaxed whitespace-pre-wrap">

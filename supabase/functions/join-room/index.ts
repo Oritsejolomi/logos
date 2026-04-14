@@ -25,7 +25,7 @@ Deno.serve(async (req) => {
 
   const { data: room, error: roomErr } = await db
     .from('rooms')
-    .select('id, status, max_players, category, difficulty, pace, question_count, host_player_uuid')
+    .select('id, status, max_players, category, difficulty, pace, question_count, host_player_uuid, session_mode, mp_variant')
     .eq('room_code', normalizedCode)
     .single();
 
@@ -84,13 +84,17 @@ Deno.serve(async (req) => {
     }
   }
 
-  const { error: insErr } = await db.from('room_players').insert({
+  const insertRow: Record<string, unknown> = {
     room_id: room.id,
     player_uuid,
     username: trimmedUsername,
     display_username: displayUsername,
     is_host: false,
-  });
+  };
+  if (room.session_mode === 'endless' && room.mp_variant === 'battle_royale') {
+    insertRow.lives_remaining = 3;
+  }
+  const { error: insErr } = await db.from('room_players').insert(insertRow);
   if (insErr) return errorResponse(500, `Failed to join: ${insErr.message}`);
 
   return jsonResponse({
@@ -102,5 +106,7 @@ Deno.serve(async (req) => {
     difficulty: room.difficulty,
     pace: room.pace,
     question_count: room.question_count,
+    session_mode: room.session_mode,
+    mp_variant: room.mp_variant,
   });
 });

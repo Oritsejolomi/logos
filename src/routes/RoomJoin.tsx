@@ -1,7 +1,22 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { joinRoom } from '../lib/api';
+import { ApiError, joinRoom } from '../lib/api';
 import { getPlayerUuid, getUsername } from '../lib/identity';
+
+function friendlyJoinError(e: unknown): string {
+  if (e instanceof ApiError) {
+    if (e.status === 404) return "We couldn't find that room. Double-check the code.";
+    if (e.status === 409) {
+      const msg = e.message.toLowerCase();
+      if (msg.includes('in_progress')) return 'This game has already started. Ask the host to spin up a new room.';
+      if (msg.includes('generating')) return 'This game is about to start. Ask the host to spin up a new room.';
+      if (msg.includes('finished')) return 'This game is already over. Ask the host to spin up a new room.';
+      if (msg.includes('abandoned')) return 'This room was abandoned. Ask the host to spin up a new one.';
+      if (msg.includes('full')) return e.message;
+    }
+  }
+  return (e as Error).message;
+}
 
 export function RoomJoin() {
   const navigate = useNavigate();
@@ -25,13 +40,19 @@ export function RoomJoin() {
       });
       navigate(`/room/${room.room_code}/lobby?id=${room.room_id}`);
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(friendlyJoinError(e));
       setBusy(false);
     }
   };
 
   return (
     <div className="mx-auto max-w-lg px-4 sm:px-6 py-10 sm:py-14 space-y-6">
+      <button
+        onClick={() => navigate('/')}
+        className="text-[11px] font-mono uppercase tracking-[0.2em] text-ink-400 hover:text-accent transition"
+      >
+        ← Back
+      </button>
       <div className="space-y-1">
         <div className="text-[11px] font-mono uppercase tracking-[0.28em] text-accent">Multiplayer</div>
         <h1 className="font-display text-3xl sm:text-4xl font-black text-ink-900">Join a room</h1>
