@@ -84,10 +84,9 @@ function UserHistoryModal({ username, onClose }: { username: string; onClose: ()
                     <div className="text-[10px] uppercase tracking-wider text-ink-400 truncate">
                       {s.category} · {s.difficulty} · {s.pace} · {s.mode}
                       {s.mp_variant && ` · ${s.mp_variant === 'battle_royale' ? 'BR' : 'co-op'}`}
-                      {s.session_mode === 'endless' && ' · endless'}
                     </div>
                     <div className="text-[10px] text-ink-400 font-mono mt-0.5">
-                      {s.session_mode === 'endless' ? `${s.question_count ?? 0}Q · ` : ''}{formatTime(s.total_time_ms)} · {formatDate(s.created_at)}
+                      {s.question_count ?? 0}Q · {formatTime(s.total_time_ms)} · {formatDate(s.created_at)}
                     </div>
                   </div>
                   <span className="font-mono text-accent tabular-nums font-semibold">{s.score}</span>
@@ -234,11 +233,10 @@ export function HallOfFame() {
                     </button>
                     <span className="hidden sm:inline text-[10px] uppercase tracking-wider text-ink-400">
                       {s.category} · {s.difficulty} · {s.pace} · {s.mode}
-                      {s.session_mode === 'endless' && ' · endless'}
                       {s.mp_variant && ` · ${s.mp_variant === 'battle_royale' ? 'BR' : 'co-op'}`}
                     </span>
                     <span className="text-xs text-ink-400 hidden md:inline tabular-nums">
-                      {s.session_mode === 'endless' ? `${s.question_count ?? 0}Q · ` : ''}{formatTime(s.total_time_ms)}
+                      {s.question_count ?? 0}Q · {formatTime(s.total_time_ms)}
                     </span>
                     <span className="font-mono text-accent tabular-nums text-lg font-semibold">{s.score}</span>
                   </li>

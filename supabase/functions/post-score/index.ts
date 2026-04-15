@@ -84,7 +84,6 @@ Deno.serve(async (req) => {
           .from('scores')
           .select('*', { count: 'exact', head: true })
           .eq('mode', 'solo')
-          .eq('session_mode', sessionMode)
           .or(`score.gt.${session.score},and(score.eq.${session.score},total_time_ms.lt.${session.total_time_ms})`);
         return jsonResponse({
           score_id: existing?.id ?? null,
@@ -95,12 +94,11 @@ Deno.serve(async (req) => {
       return errorResponse(500, `Failed to insert score: ${insErr.message}`);
     }
 
-    // Rank within the same mode + session_mode board.
+    // Rank across all solo scores regardless of session_mode — matches leaderboard ordering.
     const { count } = await db
       .from('scores')
       .select('*', { count: 'exact', head: true })
       .eq('mode', 'solo')
-      .eq('session_mode', sessionMode)
       .or(`score.gt.${session.score},and(score.eq.${session.score},total_time_ms.lt.${session.total_time_ms})`);
 
     return jsonResponse({
