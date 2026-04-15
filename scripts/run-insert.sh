@@ -2,15 +2,20 @@
 # Wrapper: normalize + insert a category batch through judge-question (all 4 gates).
 # Usage: bash scripts/run-insert.sh <category-slug>
 # Example: bash scripts/run-insert.sh new-testament
+#
+# Required env vars (set in your shell before running):
+#   SUPABASE_URL
+#   SUPABASE_ANON_KEY
+#   SUPABASE_SERVICE_KEY
 set -euo pipefail
 
 SLUG="${1:?Usage: run-insert.sh <category-slug>}"
 RAW="/tmp/batches/${SLUG}.json"
 READY="/tmp/batches/${SLUG}-ready.json"
 
-SUPABASE_URL="https://rnezgrieymrqdlmwknvj.supabase.co"
-SUPABASE_ANON_KEY="REDACTED_ANON_KEY"
-SUPABASE_SERVICE_KEY="REDACTED_SERVICE_KEY"
+: "${SUPABASE_URL:?SUPABASE_URL must be set}"
+: "${SUPABASE_ANON_KEY:?SUPABASE_ANON_KEY must be set}"
+: "${SUPABASE_SERVICE_KEY:?SUPABASE_SERVICE_KEY must be set}"
 
 echo "=== Concatenating chunks for: $SLUG ==="
 python3 -c "
