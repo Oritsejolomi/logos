@@ -45,12 +45,19 @@ export function SoloPlay() {
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
   const [flagged, setFlagged] = useState(false);
   const [flagging, setFlagging] = useState(false);
-  // pendingPick: first click selects, second click on same confirms
+  // pendingPick: display-slot index of selected option
   const [pendingPick, _setPendingPick] = useState<number | null>(null);
   const pendingPickRef = useRef<number | null>(null);
   const setPendingPick = (v: number | null) => {
     pendingPickRef.current = v;
     _setPendingPick(v);
+  };
+  // shuffleOrder[displaySlot] = originalOptionIndex — randomised per question
+  const [shuffleOrder, _setShuffleOrder] = useState<number[]>([0, 1, 2, 3]);
+  const shuffleOrderRef = useRef<number[]>([0, 1, 2, 3]);
+  const setShuffleOrder = (v: number[]) => {
+    shuffleOrderRef.current = v;
+    _setShuffleOrder(v);
   };
 
   const playerUuid = getPlayerUuid();
@@ -68,6 +75,7 @@ export function SoloPlay() {
         player_uuid: playerUuid,
         recent_hashes: recentHashesForRequest(),
       });
+      setShuffleOrder([0, 1, 2, 3].sort(() => Math.random() - 0.5));
       setQuestion(q);
       setFlagged(false);
       setPhase('question');
@@ -112,7 +120,10 @@ export function SoloPlay() {
     const tick = () => {
       const remaining = Math.max(0, deadline - Date.now());
       setTimeLeft(remaining);
-      if (remaining === 0) void onAnswer(pendingPickRef.current);
+      if (remaining === 0) {
+        const pick = pendingPickRef.current;
+        void onAnswer(pick !== null ? shuffleOrderRef.current[pick] : null);
+      }
     };
     tick();
     const id = setInterval(tick, 100);
@@ -283,9 +294,9 @@ export function SoloPlay() {
           {question.question_text}
         </h2>
         <div className="space-y-2">
-          {question.options.map((opt, i) => {
-            const isCorrect = i === result.correct_index;
-            const isWrongPick = lastPick === i && !result.is_correct;
+          {shuffleOrder.map((origIdx, displayIdx) => {
+            const isCorrect = origIdx === result.correct_index;
+            const isWrongPick = origIdx === lastPick && !result.is_correct;
             const base = 'rounded-md border px-4 py-3 text-sm transition';
             const className = isCorrect
               ? `${base} border-yes bg-yes/10 text-yes font-medium`
@@ -293,9 +304,9 @@ export function SoloPlay() {
                 ? `${base} border-no bg-no/10 text-no line-through`
                 : `${base} border-rule text-ink-400`;
             return (
-              <div key={i} className={className}>
-                <span className="mr-3 font-mono text-xs opacity-70">{String.fromCharCode(65 + i)}</span>
-                {opt}
+              <div key={origIdx} className={className}>
+                <span className="mr-3 font-mono text-xs opacity-70">{String.fromCharCode(65 + displayIdx)}</span>
+                {question.options[origIdx]}
               </div>
             );
           })}
@@ -347,12 +358,12 @@ export function SoloPlay() {
           {question.question_text}
         </h2>
         <div className="space-y-2">
-          {question.options.map((opt, i) => {
-            const isSelected = pendingPick === i;
+          {shuffleOrder.map((origIdx, displayIdx) => {
+            const isSelected = pendingPick === displayIdx;
             return (
               <button
-                key={i}
-                onClick={() => setPendingPick(i)}
+                key={origIdx}
+                onClick={() => setPendingPick(displayIdx)}
                 className={`group w-full rounded-md border px-4 py-3 text-left transition ${
                   isSelected
                     ? 'border-accent bg-accent/10 ring-2 ring-accent/20'
@@ -360,15 +371,15 @@ export function SoloPlay() {
                 }`}
               >
                 <span className={`mr-3 font-mono text-xs ${isSelected ? 'text-accent font-bold' : 'text-ink-400 group-hover:text-accent'}`}>
-                  {String.fromCharCode(65 + i)}
+                  {String.fromCharCode(65 + displayIdx)}
                 </span>
-                <span className={isSelected ? 'text-accent font-medium' : 'text-ink-800'}>{opt}</span>
+                <span className={isSelected ? 'text-accent font-medium' : 'text-ink-800'}>{question.options[origIdx]}</span>
               </button>
             );
           })}
         </div>
         <button
-          onClick={() => pendingPick !== null && void onAnswer(pendingPick)}
+          onClick={() => pendingPick !== null && void onAnswer(shuffleOrder[pendingPick])}
           disabled={pendingPick === null}
           className="w-full rounded-md bg-accent px-4 py-3 text-card font-semibold hover:bg-accent-soft disabled:opacity-30 disabled:cursor-not-allowed transition"
         >
