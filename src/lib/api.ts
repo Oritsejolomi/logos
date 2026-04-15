@@ -217,6 +217,11 @@ export async function getLeaderboard(limit = 100): Promise<LeaderboardEntry[]> {
   return res.scores ?? [];
 }
 
+export async function getUserScores(username: string): Promise<LeaderboardEntry[]> {
+  const res = await call<{ scores: LeaderboardEntry[] }>('get-user-scores', { username }, { method: 'GET' });
+  return res.scores ?? [];
+}
+
 // ----- Multiplayer ----------------------------------------------------------
 
 export interface CreateRoomResult {

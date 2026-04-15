@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   flagQuestion,
@@ -7,7 +7,6 @@ import {
   postScore,
   queueSoloQuestions,
   submitSoloAnswer,
-  type SessionMode,
   type SoloAnswerResult,
   type SoloQuestion,
 } from '../lib/api';
@@ -28,9 +27,6 @@ export function SoloPlay() {
   const category = params.get('category') ?? '';
   const difficulty = params.get('difficulty') ?? '';
   const pace = params.get('pace') ?? '';
-  const questionCount = Number(params.get('count') ?? '5');
-  const sessionMode = (params.get('mode') ?? 'fixed') as SessionMode;
-  const isEndless = sessionMode === 'endless';
   const navigate = useNavigate();
 
   const [phase, setPhase] = useState<Phase>('loading');
@@ -40,7 +36,7 @@ export function SoloPlay() {
   const [score, setScore] = useState(0);
   const [streak, setStreak] = useState(0);
   const [streakPulse, setStreakPulse] = useState(false);
-  const [lives, setLives] = useState<number>(isEndless ? ENDLESS_MAX_LIVES : 0);
+  const [lives, setLives] = useState<number>(ENDLESS_MAX_LIVES);
   const [correctCount, setCorrectCount] = useState(0);
   const [questionsSurvived, setQuestionsSurvived] = useState(0);
   const [err, setErr] = useState<string | null>(null);
@@ -49,6 +45,13 @@ export function SoloPlay() {
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
   const [flagged, setFlagged] = useState(false);
   const [flagging, setFlagging] = useState(false);
+  // pendingPick: first click selects, second click on same confirms
+  const [pendingPick, _setPendingPick] = useState<number | null>(null);
+  const pendingPickRef = useRef<number | null>(null);
+  const setPendingPick = (v: number | null) => {
+    pendingPickRef.current = v;
+    _setPendingPick(v);
+  };
 
   const playerUuid = getPlayerUuid();
 
@@ -58,6 +61,7 @@ export function SoloPlay() {
     setQuestion(null);
     setResult(null);
     setLastPick(null);
+    setPendingPick(null);
     try {
       const q = await getSoloQuestion({
         session_id: sessionId,
@@ -81,7 +85,7 @@ export function SoloPlay() {
         if (state.status === 'finished') {
           setScore(state.score);
           setStreak(state.streak);
-          if (isEndless) setQuestionsSurvived(state.current_q_index);
+          setQuestionsSurvived(state.current_q_index);
           setPhase('finished');
           return;
         }
@@ -89,7 +93,7 @@ export function SoloPlay() {
           setErr('This session was abandoned. Start a new one from the home screen.');
           return;
         }
-        if (isEndless && typeof state.lives_remaining === 'number') {
+        if (typeof state.lives_remaining === 'number') {
           setLives(state.lives_remaining);
         }
         void loadQuestion();
@@ -108,7 +112,7 @@ export function SoloPlay() {
     const tick = () => {
       const remaining = Math.max(0, deadline - Date.now());
       setTimeLeft(remaining);
-      if (remaining === 0) void onAnswer(null);
+      if (remaining === 0) void onAnswer(pendingPickRef.current);
     };
     tick();
     const id = setInterval(tick, 100);
@@ -140,14 +144,12 @@ export function SoloPlay() {
       setResult(r);
       setScore(r.new_score);
       setStreak(r.new_streak);
-      if (isEndless) {
-        if (typeof r.lives_remaining === 'number') setLives(r.lives_remaining);
-        if (typeof r.correct_count === 'number') setCorrectCount(r.correct_count);
-        setQuestionsSurvived(r.next_question_index);
-      }
+      if (typeof r.lives_remaining === 'number') setLives(r.lives_remaining);
+      if (typeof r.correct_count === 'number') setCorrectCount(r.correct_count);
+      setQuestionsSurvived(r.next_question_index);
       setPhase('reveal');
       // Keep the rolling buffer topped up.
-      if (isEndless && r.session_status === 'active') {
+      if (r.session_status === 'active') {
         void queueSoloQuestions({
           session_id: sessionId,
           player_uuid: playerUuid,
@@ -223,14 +225,12 @@ export function SoloPlay() {
       <div className="mx-auto max-w-xl px-4 sm:px-6 py-10 space-y-5">
         <ContextChips category={category} difficulty={difficulty} pace={pace} />
         <h1 className="font-display text-4xl sm:text-5xl font-black text-ink-900">
-          {isEndless ? 'You ran out of lives' : 'Game over'}
+          You ran out of lives
         </h1>
-        {isEndless && (
-          <div className="rounded-xl border border-rule bg-card p-5">
-            <div className="text-[11px] uppercase tracking-[0.2em] text-ink-400">Questions survived</div>
-            <div className="font-mono text-4xl text-ink-900 tabular-nums mt-1 font-bold">{questionsSurvived}</div>
-          </div>
-        )}
+        <div className="rounded-xl border border-rule bg-card p-5">
+          <div className="text-[11px] uppercase tracking-[0.2em] text-ink-400">Questions survived</div>
+          <div className="font-mono text-4xl text-ink-900 tabular-nums mt-1 font-bold">{questionsSurvived}</div>
+        </div>
         <div className="rounded-xl border border-accent/30 bg-accent/5 p-6">
           <div className="text-[11px] uppercase tracking-[0.2em] text-ink-400">Final score</div>
           <div className="font-mono text-6xl text-accent tabular-nums mt-1 font-bold">{score}</div>
@@ -273,11 +273,9 @@ export function SoloPlay() {
           difficulty={displayDifficulty}
           pace={pace}
           index={question.question_index}
-          total={questionCount}
           score={score}
           streak={streak}
           streakPulse={streakPulse}
-          isEndless={isEndless}
           lives={lives}
           correctCount={correctCount}
         />
@@ -320,7 +318,7 @@ export function SoloPlay() {
           onClick={nextQuestion}
           className="w-full rounded-md bg-accent px-4 py-3 text-card font-semibold hover:bg-accent-soft transition"
         >
-          {isLast ? (isEndless ? 'See final score' : 'See final score') : 'Next question'}
+          {isLast ? 'See final score' : 'Next question'}
         </button>
       </div>
     );
@@ -338,11 +336,9 @@ export function SoloPlay() {
           difficulty={displayDifficulty}
           pace={pace}
           index={question.question_index}
-          total={questionCount}
           score={score}
           streak={streak}
           streakPulse={streakPulse}
-          isEndless={isEndless}
           lives={lives}
           correctCount={correctCount}
         />
@@ -351,19 +347,33 @@ export function SoloPlay() {
           {question.question_text}
         </h2>
         <div className="space-y-2">
-          {question.options.map((opt, i) => (
-            <button
-              key={i}
-              onClick={() => onAnswer(i)}
-              className="group w-full rounded-md border border-rule bg-card px-4 py-3 text-left hover:bg-page hover:border-accent/60 transition"
-            >
-              <span className="mr-3 font-mono text-xs text-ink-400 group-hover:text-accent">
-                {String.fromCharCode(65 + i)}
-              </span>
-              <span className="text-ink-800">{opt}</span>
-            </button>
-          ))}
+          {question.options.map((opt, i) => {
+            const isSelected = pendingPick === i;
+            return (
+              <button
+                key={i}
+                onClick={() => setPendingPick(i)}
+                className={`group w-full rounded-md border px-4 py-3 text-left transition ${
+                  isSelected
+                    ? 'border-accent bg-accent/10 ring-2 ring-accent/20'
+                    : 'border-rule bg-card hover:bg-page hover:border-accent/60'
+                }`}
+              >
+                <span className={`mr-3 font-mono text-xs ${isSelected ? 'text-accent font-bold' : 'text-ink-400 group-hover:text-accent'}`}>
+                  {String.fromCharCode(65 + i)}
+                </span>
+                <span className={isSelected ? 'text-accent font-medium' : 'text-ink-800'}>{opt}</span>
+              </button>
+            );
+          })}
         </div>
+        <button
+          onClick={() => pendingPick !== null && void onAnswer(pendingPick)}
+          disabled={pendingPick === null}
+          className="w-full rounded-md bg-accent px-4 py-3 text-card font-semibold hover:bg-accent-soft disabled:opacity-30 disabled:cursor-not-allowed transition"
+        >
+          Lock in answer
+        </button>
       </div>
     );
   }
@@ -376,11 +386,9 @@ function TopBar(props: {
   difficulty: string;
   pace: string;
   index: number;
-  total: number;
   score: number;
   streak: number;
   streakPulse: boolean;
-  isEndless: boolean;
   lives: number;
   correctCount: number;
 }) {
@@ -388,11 +396,7 @@ function TopBar(props: {
     <div className="space-y-3">
       <ContextChips category={props.category} difficulty={props.difficulty} pace={props.pace} />
       <div className="flex items-center justify-between gap-3">
-        {props.isEndless ? (
-          <LivesIndicator lives={props.lives} questionIndex={props.index} streak={props.streak} />
-        ) : (
-          <ProgressDots index={props.index} total={props.total} />
-        )}
+        <LivesIndicator lives={props.lives} questionIndex={props.index} streak={props.streak} />
         <div className="flex items-center gap-3 text-sm">
           <span className="text-ink-400 text-xs uppercase tracking-wider">Score</span>
           <span className="font-mono text-lg text-accent font-bold tabular-nums">{props.score}</span>
@@ -417,22 +421,6 @@ function ContextChips({ category, difficulty, pace }: { category: string; diffic
   );
 }
 
-function ProgressDots({ index, total }: { index: number; total: number }) {
-  const dots = Array.from({ length: total }, (_, i) => i);
-  return (
-    <div className="flex items-center gap-1">
-      {dots.map((i) => {
-        const state = i < index ? 'done' : i === index ? 'active' : 'pending';
-        const cls =
-          state === 'done' ? 'bg-yes'
-          : state === 'active' ? 'bg-accent ring-2 ring-accent/20'
-          : 'bg-rule';
-        return <span key={i} className={`h-2 w-2 rounded-full ${cls}`} />;
-      })}
-    </div>
-  );
-}
-
 function LivesIndicator({ lives, questionIndex, streak }: { lives: number; questionIndex: number; streak: number }) {
   const hearts = Array.from({ length: 3 }, (_, i) => i < lives);
   // Regen progress: next life when streak hits the next multiple of 7.
@@ -440,19 +428,19 @@ function LivesIndicator({ lives, questionIndex, streak }: { lives: number; quest
   const sinceRegen = streak % 7;
   const toNextRegen = 7 - sinceRegen;
   return (
-    <div className="flex items-center gap-3">
-      <div className="flex items-center gap-1 text-lg" title={`${lives} lives remaining`}>
+    <div className="flex items-center gap-2">
+      <div className="flex items-center gap-0.5 text-base" title={`${lives} lives remaining`}>
         {hearts.map((on, i) => (
           <span key={i} className={on ? 'text-accent' : 'text-rule'}>
             {on ? '♥' : '♡'}
           </span>
         ))}
       </div>
-      <div className="flex items-center gap-2 text-[10px] font-mono text-ink-400 uppercase tracking-wider">
-        <span>Q {questionIndex + 1}</span>
+      <div className="flex items-center gap-1.5 text-[10px] font-mono text-ink-400 uppercase tracking-wider whitespace-nowrap">
+        <span>Q{questionIndex + 1}</span>
         {lives < 3 && (
-          <span className="text-accent/70" title="Answer 7 correct in a row to earn a life back. A wrong answer resets the streak.">
-            +1 life in {toNextRegen} more in a row
+          <span className="text-accent/70" title="Answer 7 correct in a row to earn a life back.">
+            +1♥ in {toNextRegen}
           </span>
         )}
       </div>
@@ -546,8 +534,11 @@ function InsightCard(props: {
 
 function PulseBar() {
   return (
-    <div className="h-2 rounded-full bg-rule/60 overflow-hidden">
-      <div className="h-full w-1/3 bg-accent/60 animate-pulse" />
+    <div className="h-1.5 rounded-full bg-rule/60 overflow-hidden">
+      <div
+        className="h-full bg-accent/70 rounded-full"
+        style={{ animation: 'fill-bar 1.8s ease-in-out forwards' }}
+      />
     </div>
   );
 }

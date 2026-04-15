@@ -47,3 +47,9 @@ h1, h2, h3, h4 {
   font-variation-settings: 'opsz' 48;
   letter-spacing: -0.01em;
 }
+
+@keyframes fill-bar {
+  0%   { width: 0%; }
+  80%  { width: 85%; }
+  100% { width: 100%; }
+}
