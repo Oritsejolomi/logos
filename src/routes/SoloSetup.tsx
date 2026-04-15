@@ -64,8 +64,11 @@ export function SoloSetup() {
         ← Back
       </button>
       <div className="space-y-1">
-        <div className="text-[11px] font-mono uppercase tracking-[0.28em] text-accent">Solo</div>
+        <div className="text-[11px] font-mono uppercase tracking-[0.28em] text-accent">Solo · Endless</div>
         <h1 className="font-display text-3xl sm:text-4xl font-black text-ink-900">Set up your run</h1>
+        <p className="text-ink-500 text-sm italic">
+          3 lives. Questions ramp up as you survive. +1 life every 7 correct in a row. Play until you run out.
+        </p>
       </div>
 
       <Group label="Category">
