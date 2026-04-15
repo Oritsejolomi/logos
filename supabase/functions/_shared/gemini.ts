@@ -497,6 +497,85 @@ async function attemptOnce(
   );
 }
 
+// ============================================================================
+// Option length normalizer — called at serve time to self-heal the bank.
+// Does NOT receive correct_index so Gemini cannot bias toward any option.
+// ============================================================================
+
+const NORMALIZE_RESPONSE_SCHEMA = {
+  type: 'object',
+  properties: {
+    options: {
+      type: 'array',
+      items: { type: 'string' },
+      minItems: 4,
+      maxItems: 4,
+    },
+  },
+  required: ['options'],
+};
+
+export async function normalizeOptions(
+  questionText: string,
+  options: string[],
+): Promise<string[] | null> {
+  const apiKey = Deno.env.get('GEMINI_API_KEY');
+  if (!apiKey) return null;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+
+  const userPrompt = [
+    `Question: ${questionText}`,
+    ``,
+    `A. ${options[0]}`,
+    `B. ${options[1]}`,
+    `C. ${options[2]}`,
+    `D. ${options[3]}`,
+  ].join('\n');
+
+  let res: Response;
+  try {
+    res = await fetch(`${GEMINI_GEN_URL}?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        systemInstruction: {
+          parts: [{
+            text: 'You are an editor fixing multiple-choice answer options. Rewrite the 4 options so no single option is notably longer or more detailed than the others. All four must feel equally plausible in length and specificity. Preserve the exact factual meaning of every option. Do not indicate which is correct.',
+          }],
+        },
+        contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+        generationConfig: {
+          temperature: 0.3,
+          responseMimeType: 'application/json',
+          responseSchema: NORMALIZE_RESPONSE_SCHEMA,
+        },
+        safetySettings: SAFETY_SETTINGS,
+      }),
+    });
+  } catch {
+    clearTimeout(timeout);
+    return null;
+  }
+  clearTimeout(timeout);
+
+  if (!res.ok) return null;
+
+  try {
+    const payload = await res.json();
+    const text = payload?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) return null;
+    const parsed = JSON.parse(text);
+    if (!Array.isArray(parsed.options) || parsed.options.length !== 4) return null;
+    if (parsed.options.some((o: unknown) => typeof o !== 'string' || !(o as string).trim())) return null;
+    return parsed.options as string[];
+  } catch {
+    return null;
+  }
+}
+
 export async function generateQuestion(
   args: GenerateArgs,
   verseLookup?: VerseLookup,

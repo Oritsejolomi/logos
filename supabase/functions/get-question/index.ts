@@ -1,6 +1,6 @@
 import { adminClient, handleOptions, jsonResponse, errorResponse } from '../_shared/supabase-admin.ts';
 import { sanitizeRecentHashes, sha256Hex } from '../_shared/dedup.ts';
-import { generateQuestion, GeminiError } from '../_shared/gemini.ts';
+import { generateQuestion, GeminiError, normalizeOptions } from '../_shared/gemini.ts';
 import { verseLookup } from '../_shared/bible-lookup.ts';
 import type { Difficulty, Pace } from '../_shared/scoring.ts';
 import { TIMER_SECONDS } from '../_shared/scoring.ts';
@@ -32,6 +32,14 @@ const CONCRETE_CATEGORIES = [
 
 function pickRandomConcreteCategory(): string {
   return CONCRETE_CATEGORIES[Math.floor(Math.random() * CONCRETE_CATEGORIES.length)];
+}
+
+function isLengthBiased(options: string[], correctIndex: number): boolean {
+  if (!Array.isArray(options) || options.length !== 4) return false;
+  const correctLen = options[correctIndex]?.length ?? 0;
+  const others = options.filter((_, i) => i !== correctIndex);
+  const avgOtherLen = others.reduce((s, o) => s + o.length, 0) / others.length;
+  return correctLen > 1.5 * avgOtherLen;
 }
 
 function passageKey(ref: string): string {
@@ -277,40 +285,53 @@ Deno.serve(async (req) => {
     // Use ramped difficulty for endless sessions. Fixed sessions use the pick.
     const fallbackDifficulty = ramp.difficulty;
 
-    // Both modes fall back through bank → Gemini. The bank lookup honors
-    // cleanedHashes AND answer-key dedup, so already-seen and same-answer
-    // questions are excluded. Depth > 0 still skips the bank because stored
-    // questions have no depth column.
-    if (ramp.endlessDepth === 0) {
-      questionRow = await fetchFromBank(
-        fallbackCategory,
-        fallbackDifficulty,
-        cleanedHashes,
-        [...queuedAndServed],
-        servedPassageKeys,
-        servedAnswerKeys,
-      );
-    }
+    // Always try the bank first — even depth > 0 slots can be served by a
+    // fresh advanced bank question. Only fall through to Gemini if the bank
+    // has nothing left that hasn't been seen or answered already.
+    questionRow = await fetchFromBank(
+      fallbackCategory,
+      fallbackDifficulty,
+      cleanedHashes,
+      [...queuedAndServed],
+      servedPassageKeys,
+      servedAnswerKeys,
+    );
+
     if (!questionRow) {
-      try {
-        // Forward-feed the bank's answer keys for this category+difficulty so
-        // the generator avoids producing near-dupes of existing rows. Merge
-        // with the session's own answer keys.
-        const bankKeys = await fetchBankAnswerKeys(fallbackCategory, fallbackDifficulty);
-        const mergedAnswerKeys = [...servedAnswerKeys, ...bankKeys];
-        questionRow = await generateAndStore(
-          fallbackCategory,
-          fallbackDifficulty,
-          cleanedHashes,
-          servedPassages,
-          servedQA,
-          mergedAnswerKeys,
-          ramp.endlessDepth,
-        );
-      } catch (err) {
-        const ge = err as GeminiError;
-        return errorResponse(503, `Gemini unavailable: ${ge.kind ?? 'unknown'}`);
+      // Retry Gemini once before giving up — parse_fail is usually transient.
+      const bankKeys = await fetchBankAnswerKeys(fallbackCategory, fallbackDifficulty);
+      const mergedAnswerKeys = [...servedAnswerKeys, ...bankKeys];
+      let lastErr: GeminiError | null = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          questionRow = await generateAndStore(
+            fallbackCategory,
+            fallbackDifficulty,
+            cleanedHashes,
+            servedPassages,
+            servedQA,
+            mergedAnswerKeys,
+            ramp.endlessDepth,
+          );
+          break;
+        } catch (err) {
+          lastErr = err as GeminiError;
+        }
       }
+      if (!questionRow) {
+        return errorResponse(503, `Gemini unavailable: ${lastErr?.kind ?? 'unknown'}`);
+      }
+    }
+  }
+
+  // Self-heal: if the correct option is notably longer than the others, ask
+  // Gemini to normalize lengths without revealing which option is correct.
+  // Patches the DB row so subsequent serves cost nothing.
+  if (isLengthBiased(questionRow.options, questionRow.correct_index)) {
+    const fixed = await normalizeOptions(questionRow.question_text, questionRow.options);
+    if (fixed) {
+      await db.from('questions').update({ options: fixed }).eq('id', questionRow.id);
+      questionRow = { ...questionRow, options: fixed };
     }
   }
 
