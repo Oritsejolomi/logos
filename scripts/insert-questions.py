@@ -27,12 +27,12 @@ import urllib.request
 # our own known Supabase endpoint rather than failing on every call.
 _SSL_CTX = ssl._create_unverified_context()
 
-URL = os.environ.get('SUPABASE_URL', 'https://rnezgrieymrqdlmwknvj.supabase.co')
+URL = os.environ.get('SUPABASE_URL')
 SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_KEY')
 ANON_KEY = os.environ.get('SUPABASE_ANON_KEY')
 
-if not SERVICE_KEY or not ANON_KEY:
-    print("ERROR: SUPABASE_SERVICE_KEY and SUPABASE_ANON_KEY must be set", file=sys.stderr)
+if not URL or not SERVICE_KEY or not ANON_KEY:
+    print("ERROR: SUPABASE_URL, SUPABASE_SERVICE_KEY and SUPABASE_ANON_KEY must be set", file=sys.stderr)
     sys.exit(1)
 
 JUDGE_URL = f"{URL}/functions/v1/judge-question"

@@ -17,11 +17,11 @@ import sys
 import urllib.error
 import urllib.request
 
-URL = os.environ.get('SUPABASE_URL', 'https://rnezgrieymrqdlmwknvj.supabase.co')
+URL = os.environ.get('SUPABASE_URL')
 SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_KEY')
 
-if not SERVICE_KEY:
-    print("ERROR: SUPABASE_SERVICE_KEY must be set", file=sys.stderr)
+if not URL or not SERVICE_KEY:
+    print("ERROR: SUPABASE_URL and SUPABASE_SERVICE_KEY must be set", file=sys.stderr)
     sys.exit(1)
 
 INSERT_URL = f"{URL}/rest/v1/questions"
