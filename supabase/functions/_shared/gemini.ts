@@ -413,7 +413,7 @@ export type VerseLookup = (ref: string) => Promise<string | null>;
 // Reject questions whose options contain parenthetical definitions or that
 // echo distinctive words from the question stem. Cheap, catches the most
 // common Gemini failure modes before burning a judge call.
-function validateOptionQuality(q: GeneratedQuestion): { ok: boolean; reason?: string } {
+export function validateOptionQuality(q: GeneratedQuestion): { ok: boolean; reason?: string } {
   for (const opt of q.options) {
     if (/\([^)]+\)/.test(opt)) {
       return { ok: false, reason: `option has parenthetical: "${opt}"` };
